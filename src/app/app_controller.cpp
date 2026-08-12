@@ -229,19 +229,6 @@ void AppController::set_language(std::string language) {
     }
 }
 
-void AppController::set_final_cleanup_enabled(bool enabled) {
-    std::lock_guard lock(mutex_);
-    if (!CanSetLanguage(state_)) {
-        return;
-    }
-    state_.final_cleanup_enabled = enabled;
-    if (state_.mode == DictationMode::Ready || state_.mode == DictationMode::Complete) {
-        state_.status = enabled
-            ? "Final cleanup enabled - ready for dictation"
-            : "Using live cleanup only - ready for dictation";
-    }
-}
-
 void AppController::tick() {
     std::lock_guard lock(mutex_);
     if (state_.mode != DictationMode::Recording ||
@@ -249,7 +236,7 @@ void AppController::tick() {
         return;
     }
     if (std::chrono::steady_clock::now() >= live_cleanup_due_) {
-        dispatch_rewrite_locked(false);
+        dispatch_rewrite_locked();
     }
 }
 
@@ -301,21 +288,12 @@ void AppController::handle_asr_message(const nlohmann::json& message) {
         if (state_.raw_final_text.empty()) {
             state_.mode = DictationMode::Complete;
             state_.status = "No speech recognized - press Enter to try again";
-        } else if (state_.final_cleanup_enabled) {
-            finalization_waiting_ = true;
-            state_.mode = DictationMode::Finalizing;
-            state_.status = rewrite_in_flight_
-                ? "Waiting for the current live cleanup before the final pass..."
-                : "Starting the final cleanup pass...";
-            if (!rewrite_in_flight_) {
-                dispatch_rewrite_locked(true);
-            }
         } else if (rewrite_in_flight_ && active_rewrite_session_id_ == session_id_) {
             finalization_waiting_ = true;
             state_.mode = DictationMode::Finalizing;
             state_.status = "Waiting for the current live cleanup...";
         } else {
-            finish_without_final_cleanup_locked();
+            finish_dictation_locked();
         }
     } else if (type == "recording_cancelled") {
         state_.mode = DictationMode::Ready;
@@ -362,7 +340,6 @@ void AppController::handle_rewrite_message(const nlohmann::json& message) {
             return;
         }
         const bool same_session = active_rewrite_session_id_ == session_id_;
-        const bool was_final = active_rewrite_is_final_;
         rewrite_in_flight_ = false;
         state_.rewrite_in_progress = false;
         active_rewrite_id_.clear();
@@ -376,16 +353,8 @@ void AppController::handle_rewrite_message(const nlohmann::json& message) {
 
         state_.rewritten_text = message.value("text", "");
         state_.error.clear();
-        if (was_final) {
-            finalization_waiting_ = false;
-            state_.mode = DictationMode::Complete;
-            state_.status = "Final cleanup complete - press Enter to dictate again";
-        } else if (finalization_waiting_) {
-            if (state_.final_cleanup_enabled) {
-                dispatch_rewrite_locked(true);
-            } else {
-                finish_without_final_cleanup_locked();
-            }
+        if (finalization_waiting_) {
+            finish_dictation_locked();
         } else if (state_.mode == DictationMode::Recording) {
             state_.status = pending_live_cleanup_
                 ? "Listening - newer speech is waiting for cleanup"
@@ -406,7 +375,7 @@ void AppController::handle_rewrite_message(const nlohmann::json& message) {
             set_error_locked(message_text);
         } else if (!same_session) {
             return;
-        } else if (finalization_waiting_ || state_.mode == DictationMode::Rewriting) {
+        } else if (finalization_waiting_) {
             finalization_waiting_ = false;
             state_.mode = DictationMode::Complete;
             state_.rewritten_text = state_.raw_final_text;
@@ -449,27 +418,21 @@ void AppController::update_transcript_locked(std::string text) {
     }
 }
 
-bool AppController::dispatch_rewrite_locked(bool final_pass) {
+bool AppController::dispatch_rewrite_locked() {
     if (rewrite_in_flight_ || !state_.rewrite_ready) {
         return false;
     }
-    const std::string& text = final_pass ? state_.raw_final_text : state_.live_text;
+    const std::string& text = state_.live_text;
     if (text.empty()) {
         return false;
     }
 
-    active_rewrite_id_ = next_id_locked(final_pass ? "final-rewrite" : "live-rewrite");
+    active_rewrite_id_ = next_id_locked("live-rewrite");
     active_rewrite_session_id_ = session_id_;
-    active_rewrite_is_final_ = final_pass;
     rewrite_in_flight_ = true;
     state_.rewrite_in_progress = true;
-    if (final_pass) {
-        state_.mode = DictationMode::Rewriting;
-        state_.status = "Running an optional final cleanup pass...";
-    } else {
-        pending_live_cleanup_ = false;
-        state_.status = "Listening - cleaning the current transcript...";
-    }
+    pending_live_cleanup_ = false;
+    state_.status = "Listening - cleaning the current transcript...";
 
     std::string error;
     if (!rewrite_.send({
@@ -482,15 +445,8 @@ bool AppController::dispatch_rewrite_locked(bool final_pass) {
         }, error)) {
         rewrite_in_flight_ = false;
         state_.rewrite_in_progress = false;
-        if (final_pass) {
-            state_.rewritten_text = state_.raw_final_text;
-            state_.mode = DictationMode::Complete;
-            state_.status = "Final cleanup failed; showing the raw transcript";
-            state_.error = std::move(error);
-        } else {
-            state_.status = "Listening - live cleanup unavailable";
-            state_.error = std::move(error);
-        }
+        state_.status = "Listening - live cleanup unavailable";
+        state_.error = std::move(error);
         active_rewrite_id_.clear();
         active_rewrite_session_id_.clear();
         return false;
@@ -498,7 +454,7 @@ bool AppController::dispatch_rewrite_locked(bool final_pass) {
     return true;
 }
 
-void AppController::finish_without_final_cleanup_locked() {
+void AppController::finish_dictation_locked() {
     finalization_waiting_ = false;
     pending_live_cleanup_ = false;
     state_.rewrite_in_progress = false;
@@ -548,10 +504,6 @@ const char* LanguageLabel(const AppSnapshot& snapshot) {
     return "Language: Auto";
 }
 
-const char* FinalCleanupLabel(const AppSnapshot& snapshot) {
-    return snapshot.final_cleanup_enabled ? "Final pass: On" : "Final pass: Off";
-}
-
 const char* PrimaryButtonLabel(const AppSnapshot& snapshot) {
     switch (snapshot.mode) {
     case DictationMode::Recording:
@@ -560,8 +512,6 @@ const char* PrimaryButtonLabel(const AppSnapshot& snapshot) {
         return "Opening microphone...";
     case DictationMode::Finalizing:
         return "Finalizing transcript...";
-    case DictationMode::Rewriting:
-        return "Running final cleanup...";
     case DictationMode::Complete:
         return "Start another dictation";
     case DictationMode::Ready:

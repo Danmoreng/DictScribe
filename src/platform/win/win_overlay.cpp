@@ -110,9 +110,6 @@ std::string DisplayText(const app::AppSnapshot& snapshot) {
         snapshot.mode == app::DictationMode::Finalizing) {
         return snapshot.live_text;
     }
-    if (snapshot.mode == app::DictationMode::Rewriting) {
-        return !snapshot.raw_final_text.empty() ? snapshot.raw_final_text : snapshot.live_text;
-    }
     return !snapshot.rewritten_text.empty() ? snapshot.rewritten_text : snapshot.live_text;
 }
 
@@ -148,7 +145,6 @@ const char* StatusLabel(const app::AppSnapshot& snapshot) {
     case app::DictationMode::StartingRecording: return "Opening microphone";
     case app::DictationMode::Recording: return "Listening";
     case app::DictationMode::Finalizing: return "Finalizing speech";
-    case app::DictationMode::Rewriting: return "Polishing text locally";
     case app::DictationMode::Complete: return "Complete";
     case app::DictationMode::Cancelling: return "Cancelling";
     case app::DictationMode::Error: return "Needs attention";
@@ -191,6 +187,8 @@ struct WinOverlay::Impl {
     app::AppSnapshot snapshot;
     std::string notice;
     std::function<void(std::string)> language_handler;
+    std::function<void(POINT)> position_handler;
+    std::optional<POINT> preferred_position;
     std::array<float, 16> level_history{};
     int scroll_line = 0;
     int max_scroll_line = 0;
@@ -290,7 +288,12 @@ struct WinOverlay::Impl {
         MONITORINFO info{};
         info.cbSize = sizeof(info);
         GetMonitorInfoW(monitor, &info);
-        int y = rect.bottom - new_height;
+        int x = rect.left;
+        int y = rect.top;
+        x = std::clamp(
+            x,
+            static_cast<int>(info.rcWork.left) + 8,
+            static_cast<int>(info.rcWork.right) - width - 8);
         y = std::clamp(
             y,
             static_cast<int>(info.rcWork.top) + 8,
@@ -299,11 +302,16 @@ struct WinOverlay::Impl {
         SetWindowPos(
             hwnd,
             nullptr,
-            rect.left,
+            x,
             y,
             width,
             new_height,
             SWP_NOACTIVATE | SWP_NOZORDER);
+        if (preferred_position &&
+            (preferred_position->x != x || preferred_position->y != y)) {
+            preferred_position = POINT{x, y};
+            if (position_handler) position_handler(*preferred_position);
+        }
     }
 
     void release_surface() {
@@ -476,6 +484,16 @@ struct WinOverlay::Impl {
             self->language_pressed = false;
             self->pressed_language_option = -1;
             return 0;
+        case WM_EXITSIZEMOVE: {
+            RECT rect{};
+            if (GetWindowRect(hwnd, &rect)) {
+                self->preferred_position = POINT{rect.left, rect.top};
+                if (self->position_handler) {
+                    self->position_handler(*self->preferred_position);
+                }
+            }
+            return 0;
+        }
         case WM_SETCURSOR: {
             POINT cursor{};
             GetCursorPos(&cursor);
@@ -772,8 +790,7 @@ struct WinOverlay::Impl {
             const float cancel_x = width - 174.0F;
             draw_keycap(cancel_x, key_y, 44.0F, "Esc");
             DrawText(canvas[0], "Cancel", cancel_x + 56.0F, key_y + 20.0F, hint_font, kMuted);
-        } else if (snapshot.mode == app::DictationMode::Finalizing ||
-                   snapshot.mode == app::DictationMode::Rewriting) {
+        } else if (snapshot.mode == app::DictationMode::Finalizing) {
             const char* progress = snapshot.status.find("Switching") != std::string::npos
                 ? "Switching language…"
                 : "Finalizing locally…";
@@ -922,6 +939,14 @@ void WinOverlay::set_language_handler(std::function<void(std::string)> handler) 
     impl_->language_handler = std::move(handler);
 }
 
+void WinOverlay::set_position_handler(std::function<void(POINT)> handler) {
+    impl_->position_handler = std::move(handler);
+}
+
+void WinOverlay::set_preferred_position(std::optional<POINT> position) {
+    impl_->preferred_position = position;
+}
+
 void WinOverlay::update(const app::AppSnapshot& snapshot, std::string notice) {
     const app::DictationMode previous_mode = impl_->snapshot.mode;
     impl_->snapshot = snapshot;
@@ -958,17 +983,31 @@ void WinOverlay::show_near(const TargetContext& target) {
         impl_->desired_logical_height(), static_cast<int>(impl_->dpi), 96);
     const int gap = MulDiv(target.caret_anchor ? 12 : 20, static_cast<int>(impl_->dpi), 96);
 
-    HMONITOR monitor = MonitorFromPoint(target.anchor, MONITOR_DEFAULTTONEAREST);
+    const POINT placement_anchor = impl_->preferred_position.value_or(target.anchor);
+    HMONITOR monitor = MonitorFromPoint(placement_anchor, MONITOR_DEFAULTTONEAREST);
     MONITORINFO info{};
     info.cbSize = sizeof(info);
     GetMonitorInfoW(monitor, &info);
-    int x = target.anchor.x - width / 2;
-    int y = target.anchor.y - height - gap;
-    if (y < info.rcWork.top) y = target.anchor.y + gap;
+    int x = 0;
+    int y = 0;
+    if (impl_->preferred_position) {
+        x = impl_->preferred_position->x;
+        y = impl_->preferred_position->y;
+    } else {
+        x = target.anchor.x - width / 2;
+        y = target.anchor.y - height - gap;
+        if (y < info.rcWork.top) y = target.anchor.y + gap;
+    }
     x = std::clamp(x, static_cast<int>(info.rcWork.left) + 8,
                    static_cast<int>(info.rcWork.right) - width - 8);
     y = std::clamp(y, static_cast<int>(info.rcWork.top) + 8,
                    static_cast<int>(info.rcWork.bottom) - height - 8);
+
+    if (impl_->preferred_position &&
+        (impl_->preferred_position->x != x || impl_->preferred_position->y != y)) {
+        impl_->preferred_position = POINT{x, y};
+        if (impl_->position_handler) impl_->position_handler(*impl_->preferred_position);
+    }
 
     impl_->release_surface();
     SetWindowPos(

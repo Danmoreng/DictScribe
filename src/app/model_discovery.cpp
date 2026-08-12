@@ -131,6 +131,7 @@ DiscoveryResult DiscoverConfig(int argc, char** argv) {
     result.config.rewrite_model = FindRewriteModel();
     if (const char* language = std::getenv("DICTSCRIBE_LANGUAGE"); language && language[0] != '\0') {
         result.config.language = language;
+        result.language_overridden = true;
     }
 
     for (int index = 1; index < argc; ++index) {
@@ -161,6 +162,7 @@ DiscoveryResult DiscoverConfig(int argc, char** argv) {
             if (!require_value(result.config.rewrite_worker)) break;
         } else if (argument == "--language") {
             if (!require_string(result.config.language)) break;
+            result.language_overridden = true;
         } else if (argument == "--gpu") {
             result.config.use_gpu = true;
         } else if (argument == "--help" || argument == "-h") {

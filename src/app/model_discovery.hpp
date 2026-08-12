@@ -12,6 +12,7 @@ struct DiscoveryResult {
     bool show_help = false;
     bool show_version = false;
     bool smoke_test = false;
+    bool language_overridden = false;
 };
 
 DiscoveryResult DiscoverConfig(int argc, char** argv);

@@ -41,7 +41,6 @@ struct WindowState {
     SkRect primary_button = SkRect::MakeEmpty();
     SkRect cancel_button = SkRect::MakeEmpty();
     SkRect language_button = SkRect::MakeEmpty();
-    SkRect final_cleanup_button = SkRect::MakeEmpty();
 };
 
 SkPaint Fill(SkColor color) {
@@ -252,35 +251,10 @@ void Render(
     canvas->drawCircle(margin + 5.0F, 112.0F, 5.0F, Fill(StatusColor(snapshot)));
     DrawSimpleText(*canvas, snapshot.status, margin + 18.0F, 117.0F, status_font, kMuted);
 
-    const std::string final_cleanup_label = FinalCleanupLabel(snapshot);
-    const float final_cleanup_width = TextWidth(pill_font, final_cleanup_label) + 34.0F;
-    window_state.final_cleanup_button = SkRect::MakeXYWH(
-        static_cast<float>(width) - margin - final_cleanup_width,
-        96.0F,
-        final_cleanup_width,
-        32.0F);
-    canvas->drawRoundRect(
-        window_state.final_cleanup_button,
-        12.0F,
-        12.0F,
-        Fill(CanSetLanguage(snapshot) ? kPanelRaised : kPanel));
-    SkPaint final_cleanup_border = Fill(
-        snapshot.final_cleanup_enabled && CanSetLanguage(snapshot) ? kAccent : kBorder);
-    final_cleanup_border.setStyle(SkPaint::kStroke_Style);
-    final_cleanup_border.setStrokeWidth(1.0F);
-    canvas->drawRoundRect(window_state.final_cleanup_button, 12.0F, 12.0F, final_cleanup_border);
-    DrawCenteredText(
-        *canvas,
-        final_cleanup_label,
-        window_state.final_cleanup_button,
-        pill_font,
-        CanSetLanguage(snapshot) ? kText : kMuted,
-        4.0F);
-
     const std::string language_label = LanguageLabel(snapshot);
     const float language_width = TextWidth(pill_font, language_label) + 34.0F;
     window_state.language_button = SkRect::MakeXYWH(
-        window_state.final_cleanup_button.left() - 10.0F - language_width,
+        static_cast<float>(width) - margin - language_width,
         96.0F,
         language_width,
         32.0F);
@@ -383,8 +357,6 @@ void KeyCallback(GLFWwindow* window, int key, int, int action, int) {
         }
     } else if (key == GLFW_KEY_L && CanSetLanguage(snapshot)) {
         state->controller->set_language(NextLanguage(snapshot));
-    } else if (key == GLFW_KEY_F && CanSetLanguage(snapshot)) {
-        state->controller->set_final_cleanup_enabled(!snapshot.final_cleanup_enabled);
     }
 }
 
@@ -399,9 +371,6 @@ void MouseButtonCallback(GLFWwindow* window, int button, int action, int) {
     if (state->language_button.contains(static_cast<float>(x), static_cast<float>(y)) &&
         CanSetLanguage(snapshot)) {
         state->controller->set_language(NextLanguage(snapshot));
-    } else if (state->final_cleanup_button.contains(static_cast<float>(x), static_cast<float>(y)) &&
-               CanSetLanguage(snapshot)) {
-        state->controller->set_final_cleanup_enabled(!snapshot.final_cleanup_enabled);
     } else if (state->cancel_button.contains(static_cast<float>(x), static_cast<float>(y))) {
         state->controller->cancel_recording();
     } else if (state->primary_button.contains(static_cast<float>(x), static_cast<float>(y)) &&

@@ -53,24 +53,22 @@ int main() {
     assert(live.audio_rms > 0.17F && live.audio_peak > 0.71F);
 
     controller.toggle_recording();
-    const auto with_final = wait_until(controller, [](const auto& state) {
+    const auto first_complete = wait_until(controller, [](const auto& state) {
         return state.mode == dictscribe::app::DictationMode::Complete;
     });
-    assert(with_final.rewritten_text == "de:Ich teste llama_rewriter.cpp weiter final 1");
-    assert(with_final.audio_rms == 0.0F && with_final.audio_peak == 0.0F);
+    assert(first_complete.rewritten_text == "de:Ich äh teste llama_rewriter.cpp weiter 1");
+    assert(first_complete.audio_rms == 0.0F && first_complete.audio_peak == 0.0F);
 
-    controller.set_final_cleanup_enabled(false);
     controller.toggle_recording();
     wait_until(controller, [](const auto& state) {
         return state.mode == dictscribe::app::DictationMode::Recording &&
             state.rewritten_text.find("llama_rewriter.cpp weiter 2") != std::string::npos;
     });
     controller.toggle_recording();
-    const auto live_only = wait_until(controller, [](const auto& state) {
+    const auto second_complete = wait_until(controller, [](const auto& state) {
         return state.mode == dictscribe::app::DictationMode::Complete;
     });
-    assert(live_only.rewritten_text == "de:Ich äh teste llama_rewriter.cpp weiter 2");
-    assert(!live_only.final_cleanup_enabled);
+    assert(second_complete.rewritten_text == "de:Ich äh teste llama_rewriter.cpp weiter 2");
 
     controller.set_language("en");
     controller.toggle_recording();

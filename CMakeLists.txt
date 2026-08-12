@@ -73,6 +73,20 @@ target_compile_definitions(dictscribe-app-controller-tests PRIVATE
 add_test(NAME dictscribe_app_controller COMMAND dictscribe-app-controller-tests)
 
 if(WIN32)
+    add_executable(dictscribe-win-settings-tests
+        tests/win_settings_test.cpp
+        src/platform/win/win_settings.cpp
+    )
+    target_include_directories(dictscribe-win-settings-tests PRIVATE
+        src
+        third_party/nlohmann-json/single_include
+    )
+    target_compile_definitions(dictscribe-win-settings-tests PRIVATE UNICODE _UNICODE)
+    if(MSVC)
+        target_compile_options(dictscribe-win-settings-tests PRIVATE /utf-8)
+    endif()
+    add_test(NAME dictscribe_win_settings COMMAND dictscribe-win-settings-tests)
+
     add_executable(dictscribe-win-text-injector-tests
         tests/win_text_injector_test.cpp
         src/platform/win/win_text_injector.cpp
@@ -99,6 +113,7 @@ if(DICTSCRIBE_BUILD_UI)
         add_executable(dictscribe WIN32
             src/platform/win/win_main.cpp
             src/platform/win/win_overlay.cpp
+            src/platform/win/win_settings.cpp
             src/platform/win/win_text_injector.cpp
             src/protocol/jsonl_protocol.cpp
             src/app/app_controller.cpp

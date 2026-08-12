@@ -9,6 +9,7 @@
 #include "app/app_controller.hpp"
 #include "app/model_discovery.hpp"
 #include "platform/win/win_overlay.hpp"
+#include "platform/win/win_settings.hpp"
 #include "platform/win/win_text_injector.hpp"
 
 #include <array>
@@ -32,7 +33,6 @@ constexpr UINT kCommandToggle = 100;
 constexpr UINT kCommandLanguageAuto = 110;
 constexpr UINT kCommandLanguageGerman = 111;
 constexpr UINT kCommandLanguageEnglish = 112;
-constexpr UINT kCommandFinalCleanup = 120;
 constexpr UINT kCommandQuit = 199;
 
 std::string WideToUtf8(std::wstring_view text) {
@@ -89,16 +89,30 @@ const wchar_t* ToggleMenuLabel(app::DictationMode mode) {
 
 class WinApp {
 public:
-    bool initialize(HINSTANCE instance, const app::DiscoveryResult& discovery) {
+    bool initialize(HINSTANCE instance, app::DiscoveryResult discovery) {
         instance_ = instance;
         smoke_test_ = discovery.smoke_test;
+        settings_ = LoadSettings();
+        if (!discovery.language_overridden) {
+            discovery.config.language = settings_.language;
+        }
         std::string error;
         if (!overlay_.create(instance, error)) {
             MessageBoxA(nullptr, error.c_str(), "DictScribe", MB_ICONERROR | MB_OK);
             return false;
         }
         overlay_.set_language_handler(
-            [this](std::string language) { controller_.set_language(std::move(language)); });
+            [this](std::string language) { select_language(std::move(language)); });
+        overlay_.set_position_handler([this](POINT position) {
+            settings_.overlay_position = OverlayPosition{position.x, position.y};
+            persist_settings();
+        });
+        if (settings_.overlay_position) {
+            overlay_.set_preferred_position(POINT{
+                settings_.overlay_position->x,
+                settings_.overlay_position->y,
+            });
+        }
 
         WNDCLASSEXW window_class{};
         window_class.cbSize = sizeof(window_class);
@@ -374,11 +388,6 @@ private:
             MF_STRING | (snapshot.language == "en" ? MF_CHECKED : 0),
             kCommandLanguageEnglish,
             L"Language: English");
-        AppendMenuW(
-            menu,
-            MF_STRING | (snapshot.final_cleanup_enabled ? MF_CHECKED : 0),
-            kCommandFinalCleanup,
-            L"Final cleanup");
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, MF_STRING, kCommandQuit, L"Quit DictScribe");
 
@@ -395,24 +404,34 @@ private:
             toggle_dictation();
             break;
         case kCommandLanguageAuto:
-            controller_.set_language("auto");
+            select_language("auto");
             break;
         case kCommandLanguageGerman:
-            controller_.set_language("de");
+            select_language("de");
             break;
         case kCommandLanguageEnglish:
-            controller_.set_language("en");
+            select_language("en");
             break;
-        case kCommandFinalCleanup: {
-            const auto snapshot = controller_.snapshot();
-            controller_.set_final_cleanup_enabled(!snapshot.final_cleanup_enabled);
-            break;
-        }
         case kCommandQuit:
             DestroyWindow(control_window_);
             break;
         default:
             break;
+        }
+    }
+
+    void select_language(std::string language) {
+        controller_.set_language(std::move(language));
+        const std::string selected = controller_.snapshot().language;
+        if (settings_.language == selected) return;
+        settings_.language = selected;
+        persist_settings();
+    }
+
+    void persist_settings() const {
+        std::string error;
+        if (!SaveSettings(settings_, error)) {
+            OutputDebugStringA(("DictScribe settings: " + error + "\n").c_str());
         }
     }
 
@@ -426,6 +445,7 @@ private:
     app::DictationMode previous_mode_ = app::DictationMode::Starting;
     TargetContext target_;
     std::string notice_;
+    WinSettings settings_;
     app::AppController controller_;
     WinOverlay overlay_;
 };
@@ -460,7 +480,7 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     }
 
     dictscribe::win::WinApp app;
-    const int result = app.initialize(instance, discovery) ? app.run() : 1;
+    const int result = app.initialize(instance, std::move(discovery)) ? app.run() : 1;
     if (instance_mutex) CloseHandle(instance_mutex);
     if (uninitialize_com) CoUninitialize();
     return result;

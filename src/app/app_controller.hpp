@@ -25,7 +25,6 @@ enum class DictationMode {
     StartingRecording,
     Recording,
     Finalizing,
-    Rewriting,
     Complete,
     Cancelling,
     Error,
@@ -36,7 +35,6 @@ struct AppSnapshot {
     bool asr_ready = false;
     bool rewrite_ready = false;
     bool rewrite_in_progress = false;
-    bool final_cleanup_enabled = true;
     float audio_rms = 0.0F;
     float audio_peak = 0.0F;
     std::string status = "Starting local models...";
@@ -62,7 +60,6 @@ public:
     void toggle_recording();
     void cancel_recording();
     void set_language(std::string language);
-    void set_final_cleanup_enabled(bool enabled);
     void tick();
     [[nodiscard]] AppSnapshot snapshot() const;
 
@@ -73,8 +70,8 @@ private:
     void handle_rewrite_message(const nlohmann::json& message);
     void update_ready_state_locked();
     void update_transcript_locked(std::string text);
-    bool dispatch_rewrite_locked(bool final_pass);
-    void finish_without_final_cleanup_locked();
+    bool dispatch_rewrite_locked();
+    void finish_dictation_locked();
     void set_error_locked(std::string message);
     std::string next_id_locked(const char* prefix);
 
@@ -84,7 +81,6 @@ private:
     WorkerProcess rewrite_;
     std::uint64_t request_sequence_ = 0;
     bool rewrite_in_flight_ = false;
-    bool active_rewrite_is_final_ = false;
     bool finalization_waiting_ = false;
     bool language_restart_pending_ = false;
     bool pending_live_cleanup_ = false;
@@ -102,6 +98,5 @@ private:
 [[nodiscard]] bool CanSetLanguage(const AppSnapshot& snapshot);
 [[nodiscard]] const char* PrimaryButtonLabel(const AppSnapshot& snapshot);
 [[nodiscard]] const char* LanguageLabel(const AppSnapshot& snapshot);
-[[nodiscard]] const char* FinalCleanupLabel(const AppSnapshot& snapshot);
 
 } // namespace dictscribe::app
