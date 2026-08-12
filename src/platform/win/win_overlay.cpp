@@ -34,7 +34,7 @@ constexpr int kMinimumLogicalHeight = 244;
 constexpr int kMaximumLogicalHeight = 460;
 constexpr float kCornerRadius = 16.0F;
 constexpr float kHeaderHeight = 52.0F;
-constexpr float kFooterHeight = 64.0F;
+constexpr float kFooterHeight = 54.0F;
 constexpr float kBodyTop = 75.0F;
 constexpr float kBodyLineHeight = 23.0F;
 
@@ -195,6 +195,9 @@ struct WinOverlay::Impl {
     bool user_scrolled = false;
     bool dragging_scrollbar = false;
     bool language_pressed = false;
+    bool language_menu_open = false;
+    int pressed_language_option = -1;
+    int hovered_language_option = -1;
     float scrollbar_track_top = 0.0F;
     float scrollbar_track_bottom = 0.0F;
     float scrollbar_thumb_top = 0.0F;
@@ -233,54 +236,43 @@ struct WinOverlay::Impl {
             static_cast<float>(client_y) / scale);
     }
 
-    void show_language_menu() {
-        HMENU menu = CreatePopupMenu();
-        if (!menu) return;
-        constexpr UINT kAuto = 1;
-        constexpr UINT kGerman = 2;
-        constexpr UINT kEnglish = 3;
-        AppendMenuW(
-            menu,
-            MF_STRING | (snapshot.language == "auto" ? MF_CHECKED : 0),
-            kAuto,
-            L"Automatic detection");
-        AppendMenuW(
-            menu,
-            MF_STRING | (snapshot.language == "de" ? MF_CHECKED : 0),
-            kGerman,
-            L"Deutsch");
-        AppendMenuW(
-            menu,
-            MF_STRING | (snapshot.language == "en" ? MF_CHECKED : 0),
-            kEnglish,
-            L"English");
+    SkRect language_menu_rect(float width = static_cast<float>(kLogicalWidth)) const {
+        const SkRect badge = language_badge_rect(width);
+        return SkRect::MakeXYWH(badge.right() - 184.0F, badge.bottom() + 6.0F, 184.0F, 114.0F);
+    }
 
+    SkRect language_option_rect(
+        int option,
+        float width = static_cast<float>(kLogicalWidth)) const {
+        const SkRect menu = language_menu_rect(width);
+        return SkRect::MakeXYWH(
+            menu.left() + 6.0F,
+            menu.top() + 6.0F + static_cast<float>(option) * 34.0F,
+            menu.width() - 12.0F,
+            30.0F);
+    }
+
+    int language_option_at(int client_x, int client_y) const {
+        if (!language_menu_open) return -1;
         RECT client{};
         GetClientRect(hwnd, &client);
         const float scale = static_cast<float>(dpi) / 96.0F;
         const float width = static_cast<float>(client.right - client.left) / scale;
-        const SkRect badge = language_badge_rect(width);
-        POINT anchor{
-            static_cast<LONG>(std::lround(badge.left() * scale)),
-            static_cast<LONG>(std::lround((badge.bottom() + 4.0F) * scale)),
-        };
-        ClientToScreen(hwnd, &anchor);
-        SetForegroundWindow(hwnd);
-        const UINT command = TrackPopupMenu(
-            menu,
-            TPM_RETURNCMD | TPM_NONOTIFY | TPM_LEFTALIGN | TPM_TOPALIGN,
-            anchor.x,
-            anchor.y,
-            0,
-            hwnd,
-            nullptr);
-        DestroyMenu(menu);
-        PostMessageW(hwnd, WM_NULL, 0, 0);
+        const float logical_x = static_cast<float>(client_x) / scale;
+        const float logical_y = static_cast<float>(client_y) / scale;
+        for (int option = 0; option < 3; ++option) {
+            if (language_option_rect(option, width).contains(logical_x, logical_y)) {
+                return option;
+            }
+        }
+        return -1;
+    }
 
+    void choose_language(int option) const {
         if (!language_handler) return;
-        if (command == kAuto) language_handler("auto");
-        else if (command == kGerman) language_handler("de");
-        else if (command == kEnglish) language_handler("en");
+        if (option == 0) language_handler("auto");
+        else if (option == 1) language_handler("de");
+        else if (option == 2) language_handler("en");
     }
 
     void apply_window_region(int width, int height) const {
@@ -366,12 +358,19 @@ struct WinOverlay::Impl {
         case WM_NCHITTEST: {
             POINT point{GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param)};
             ScreenToClient(hwnd, &point);
+            if (self->language_menu_open) return HTCLIENT;
             if (self->language_badge_contains(point.x, point.y)) return HTCLIENT;
             const int header_height = MulDiv(
                 static_cast<int>(kHeaderHeight), static_cast<int>(self->dpi), 96);
             return point.y >= 0 && point.y < header_height ? HTCAPTION : HTCLIENT;
         }
         case WM_MOUSEWHEEL: {
+            if (self->language_menu_open) {
+                self->language_menu_open = false;
+                self->hovered_language_option = -1;
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
             const int steps = GET_WHEEL_DELTA_WPARAM(w_param) / WHEEL_DELTA;
             self->scroll_by(-steps * 3);
             return 0;
@@ -380,6 +379,19 @@ struct WinOverlay::Impl {
             if (self->language_badge_contains(GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param))) {
                 self->language_pressed = true;
                 SetCapture(hwnd);
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
+            if (self->language_menu_open) {
+                const int option = self->language_option_at(
+                    GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param));
+                if (option >= 0) {
+                    self->pressed_language_option = option;
+                    SetCapture(hwnd);
+                } else {
+                    self->language_menu_open = false;
+                    self->hovered_language_option = -1;
+                }
                 InvalidateRect(hwnd, nullptr, FALSE);
                 return 0;
             }
@@ -401,18 +413,54 @@ struct WinOverlay::Impl {
             return 0;
         }
         case WM_MOUSEMOVE:
+            if (self->language_menu_open) {
+                const int hovered = self->language_option_at(
+                    GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param));
+                if (hovered != self->hovered_language_option) {
+                    self->hovered_language_option = hovered;
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                }
+                TRACKMOUSEEVENT tracking{};
+                tracking.cbSize = sizeof(tracking);
+                tracking.dwFlags = TME_LEAVE;
+                tracking.hwndTrack = hwnd;
+                TrackMouseEvent(&tracking);
+            }
             if (self->dragging_scrollbar && (w_param & MK_LBUTTON)) {
                 self->scroll_from_client_y(GET_Y_LPARAM(l_param), true);
             }
             return 0;
+        case WM_MOUSELEAVE:
+            if (self->hovered_language_option >= 0) {
+                self->hovered_language_option = -1;
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            return 0;
         case WM_LBUTTONUP:
             if (self->language_pressed) {
-                const bool open_menu = self->language_badge_contains(
+                const bool toggle_menu = self->language_badge_contains(
                     GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param));
                 self->language_pressed = false;
                 ReleaseCapture();
+                if (toggle_menu) {
+                    self->language_menu_open = !self->language_menu_open;
+                    self->hovered_language_option = -1;
+                }
                 InvalidateRect(hwnd, nullptr, FALSE);
-                if (open_menu) self->show_language_menu();
+                return 0;
+            }
+            if (self->pressed_language_option >= 0) {
+                const int pressed = self->pressed_language_option;
+                const int released = self->language_option_at(
+                    GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param));
+                self->pressed_language_option = -1;
+                ReleaseCapture();
+                if (pressed == released) {
+                    self->language_menu_open = false;
+                    self->hovered_language_option = -1;
+                    self->choose_language(pressed);
+                }
+                InvalidateRect(hwnd, nullptr, FALSE);
                 return 0;
             }
             if (self->dragging_scrollbar) {
@@ -423,22 +471,26 @@ struct WinOverlay::Impl {
         case WM_CAPTURECHANGED:
             self->dragging_scrollbar = false;
             self->language_pressed = false;
+            self->pressed_language_option = -1;
             return 0;
-        case WM_SETCURSOR:
+        case WM_SETCURSOR: {
+            POINT cursor{};
+            GetCursorPos(&cursor);
+            ScreenToClient(hwnd, &cursor);
+            if (self->language_badge_contains(cursor.x, cursor.y)) {
+                SetCursor(LoadCursorW(nullptr, IDC_HAND));
+                return TRUE;
+            }
+            if (self->language_menu_open) {
+                SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+                return TRUE;
+            }
             if (LOWORD(l_param) == HTCAPTION) {
                 SetCursor(LoadCursorW(nullptr, IDC_SIZEALL));
                 return TRUE;
             }
-            if (LOWORD(l_param) == HTCLIENT) {
-                POINT cursor{};
-                GetCursorPos(&cursor);
-                ScreenToClient(hwnd, &cursor);
-                if (self->language_badge_contains(cursor.x, cursor.y)) {
-                    SetCursor(LoadCursorW(nullptr, IDC_HAND));
-                    return TRUE;
-                }
-            }
             return DefWindowProcW(hwnd, message, w_param, l_param);
+        }
         case WM_DPICHANGED: {
             self->dpi = HIWORD(w_param);
             const auto* suggested = reinterpret_cast<RECT*>(l_param);
@@ -524,16 +576,12 @@ struct WinOverlay::Impl {
         const SkFont badge_font(semibold, 11.5F);
         const SkFont hint_font(regular, 12.0F);
         const SkFont key_font(semibold, 11.5F);
+        const SkFont menu_font(regular, 12.5F);
 
         canvas->drawRect(SkRect::MakeWH(width, height), Fill(kBackground));
         SkPaint border = Fill(kBorder);
         border.setStyle(SkPaint::kStroke_Style);
         border.setStrokeWidth(1.0F);
-        canvas->drawRoundRect(
-            SkRect::MakeXYWH(0.5F, 0.5F, width - 1.0F, height - 1.0F),
-            kCornerRadius,
-            kCornerRadius,
-            border);
 
         const SkColor status_color = StatusColor(snapshot.mode);
         canvas->drawCircle(28.0F, 26.0F, 5.0F, Fill(status_color));
@@ -572,8 +620,13 @@ struct WinOverlay::Impl {
         chevron.setStrokeWidth(1.4F);
         chevron.setStrokeCap(SkPaint::kRound_Cap);
         const float chevron_x = badge_rect.right() - 12.0F;
-        canvas->drawLine(chevron_x - 3.0F, 24.0F, chevron_x, 27.0F, chevron);
-        canvas->drawLine(chevron_x, 27.0F, chevron_x + 3.0F, 24.0F, chevron);
+        if (language_menu_open) {
+            canvas->drawLine(chevron_x - 3.0F, 27.0F, chevron_x, 24.0F, chevron);
+            canvas->drawLine(chevron_x, 24.0F, chevron_x + 3.0F, 27.0F, chevron);
+        } else {
+            canvas->drawLine(chevron_x - 3.0F, 24.0F, chevron_x, 27.0F, chevron);
+            canvas->drawLine(chevron_x, 27.0F, chevron_x + 3.0F, 24.0F, chevron);
+        }
 
         const float meter_start_x = width - 132.0F;
         for (std::size_t index = 0; index < level_history.size(); ++index) {
@@ -648,46 +701,121 @@ struct WinOverlay::Impl {
         }
 
         const float footer_top = height - kFooterHeight;
-        canvas->drawRect(SkRect::MakeXYWH(1.0F, footer_top, width - 2.0F, kFooterHeight - 1.0F), Fill(kSurface));
-        canvas->drawLine(20.0F, footer_top, width - 20.0F, footer_top, border);
+        canvas->drawRect(
+            SkRect::MakeXYWH(0.0F, footer_top, width, kFooterHeight),
+            Fill(kSurface));
 
         const auto draw_keycap = [&](float x, float y, float key_width, std::string_view key) {
             canvas->drawRoundRect(
-                SkRect::MakeXYWH(x, y, key_width, 34.0F),
-                8.0F,
-                8.0F,
+                SkRect::MakeXYWH(x, y, key_width, 30.0F),
+                7.0F,
+                7.0F,
                 Fill(kElevated));
             canvas->drawRoundRect(
-                SkRect::MakeXYWH(x + 0.5F, y + 0.5F, key_width - 1.0F, 33.0F),
-                8.0F,
-                8.0F,
+                SkRect::MakeXYWH(x + 0.5F, y + 0.5F, key_width - 1.0F, 29.0F),
+                7.0F,
+                7.0F,
                 badge_border);
             DrawText(
                 canvas[0],
                 key,
                 x + (key_width - TextWidth(key_font, key)) * 0.5F,
-                y + 22.0F,
+                y + 20.0F,
                 key_font,
                 kText);
         };
 
-        const float key_y = footer_top + 15.0F;
+        const float key_y = footer_top + 12.0F;
         if (snapshot.mode == app::DictationMode::Recording) {
             draw_keycap(24.0F, key_y, 58.0F, "Enter");
-            DrawText(canvas[0], "Finish & insert", 94.0F, key_y + 22.0F, hint_font, kMuted);
+            DrawText(canvas[0], "Finish & insert", 94.0F, key_y + 20.0F, hint_font, kMuted);
             const float cancel_x = width - 174.0F;
             draw_keycap(cancel_x, key_y, 44.0F, "Esc");
-            DrawText(canvas[0], "Cancel", cancel_x + 56.0F, key_y + 22.0F, hint_font, kMuted);
+            DrawText(canvas[0], "Cancel", cancel_x + 56.0F, key_y + 20.0F, hint_font, kMuted);
         } else if (snapshot.mode == app::DictationMode::Finalizing ||
                    snapshot.mode == app::DictationMode::Rewriting) {
             const char* progress = snapshot.status.find("Switching") != std::string::npos
                 ? "Switching language…"
                 : "Finalizing locally…";
-            DrawText(canvas[0], progress, 28.0F, key_y + 22.0F, hint_font, kMuted);
+            DrawText(canvas[0], progress, 28.0F, key_y + 20.0F, hint_font, kMuted);
         } else {
             draw_keycap(24.0F, key_y, 124.0F, "Ctrl Alt Space");
-            DrawText(canvas[0], "Start dictation", 160.0F, key_y + 22.0F, hint_font, kMuted);
+            DrawText(canvas[0], "Start dictation", 160.0F, key_y + 20.0F, hint_font, kMuted);
         }
+
+        if (language_menu_open) {
+            const SkRect menu_rect = language_menu_rect(width);
+            const SkRect shadow_rect = SkRect::MakeXYWH(
+                menu_rect.left() - 3.0F,
+                menu_rect.top() + 3.0F,
+                menu_rect.width() + 6.0F,
+                menu_rect.height() + 4.0F);
+            canvas->drawRoundRect(
+                shadow_rect,
+                11.0F,
+                11.0F,
+                Fill(SkColorSetARGB(110, 0, 0, 0)));
+            canvas->drawRoundRect(menu_rect, 9.0F, 9.0F, Fill(kElevated));
+
+            SkPaint menu_border = Fill(kBorder);
+            menu_border.setStyle(SkPaint::kStroke_Style);
+            menu_border.setStrokeWidth(1.0F);
+            canvas->drawRoundRect(
+                SkRect::MakeXYWH(
+                    menu_rect.left() + 0.5F,
+                    menu_rect.top() + 0.5F,
+                    menu_rect.width() - 1.0F,
+                    menu_rect.height() - 1.0F),
+                9.0F,
+                9.0F,
+                menu_border);
+
+            const std::array<std::string_view, 3> labels = {
+                "Automatic detection",
+                "Deutsch",
+                "English",
+            };
+            const int selected = snapshot.language == "de" ? 1 :
+                (snapshot.language == "en" ? 2 : 0);
+            for (int option = 0; option < 3; ++option) {
+                const SkRect item = language_option_rect(option, width);
+                if (option == pressed_language_option) {
+                    canvas->drawRoundRect(item, 6.0F, 6.0F, Fill(kBorder));
+                } else if (option == hovered_language_option) {
+                    canvas->drawRoundRect(
+                        item,
+                        6.0F,
+                        6.0F,
+                        Fill(SkColorSetRGB(36, 42, 55)));
+                } else if (option == selected) {
+                    canvas->drawRoundRect(
+                        item,
+                        6.0F,
+                        6.0F,
+                        Fill(SkColorSetRGB(42, 39, 66)));
+                }
+
+                const float center_y = item.centerY();
+                if (option == selected) {
+                    canvas->drawCircle(item.left() + 14.0F, center_y, 3.5F, Fill(kAccent));
+                } else {
+                    canvas->drawCircle(item.left() + 14.0F, center_y, 2.0F, Fill(kSubtle));
+                }
+                DrawText(
+                    canvas[0],
+                    labels[static_cast<std::size_t>(option)],
+                    item.left() + 27.0F,
+                    center_y + 4.5F,
+                    menu_font,
+                    option == selected ? kText : kMuted);
+            }
+        }
+
+        canvas->drawRoundRect(
+            SkRect::MakeXYWH(0.5F, 0.5F, width - 1.0F, height - 1.0F),
+            kCornerRadius,
+            kCornerRadius,
+            border);
 
         canvas->restore();
         present();
