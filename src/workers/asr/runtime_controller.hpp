@@ -41,8 +41,10 @@ private:
     void start(const nlohmann::json& command);
     void stop(const nlohmann::json& command, bool cancelled);
     void worker_loop(std::string session_id);
+    void meter_loop(std::string session_id);
     void emit_feed(const FeedResult& result, const std::string& session_id);
     void join_worker();
+    void join_meter();
 
     std::string model_path_;
     bool use_gpu_ = false;
@@ -55,6 +57,7 @@ private:
     std::string session_id_;
     std::mutex state_mutex_;
     std::thread worker_;
+    std::thread meter_;
     AudioRingBuffer ring_{16000 * 10};
     AudioCapture capture_{ring_};
     TranscriptionEngine engine_;

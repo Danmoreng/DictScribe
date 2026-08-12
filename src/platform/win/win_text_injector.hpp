@@ -17,7 +17,7 @@ struct TargetContext {
     bool caret_anchor = false;
 };
 
-TargetContext CaptureTargetContext(HWND overlay_window);
+TargetContext CaptureTargetContext(HWND overlay_window, HWND control_window);
 bool InsertText(const TargetContext& target, std::string_view text, std::string& error);
 bool PutTextOnClipboard(std::string_view text, std::string& error);
 

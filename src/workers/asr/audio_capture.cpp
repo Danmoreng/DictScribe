@@ -1,5 +1,8 @@
 #include "audio_capture.hpp"
 
+#include <algorithm>
+#include <cmath>
+
 namespace dictscribe::asr {
 
 AudioRingBuffer::AudioRingBuffer(std::size_t capacity_samples)
@@ -63,6 +66,9 @@ bool AudioCapture::start(std::string& error) {
         return true;
     }
 
+    rms_level_.store(0.0F, std::memory_order_relaxed);
+    peak_level_.store(0.0F, std::memory_order_relaxed);
+
     auto config = ma_device_config_init(ma_device_type_capture);
     config.capture.format = ma_format_f32;
     config.capture.channels = 1;
@@ -98,6 +104,8 @@ void AudioCapture::stop() {
     ma_device_stop(&device_);
     ma_device_uninit(&device_);
     initialized_ = false;
+    rms_level_.store(0.0F, std::memory_order_relaxed);
+    peak_level_.store(0.0F, std::memory_order_relaxed);
 }
 
 void AudioCapture::data_callback(
@@ -109,7 +117,20 @@ void AudioCapture::data_callback(
     if (!capture || !input || !capture->running_) {
         return;
     }
-    capture->ring_.push(static_cast<const float*>(input), frame_count);
+    const auto* samples = static_cast<const float*>(input);
+    double square_sum = 0.0;
+    float peak = 0.0F;
+    for (ma_uint32 index = 0; index < frame_count; ++index) {
+        const float sample = samples[index];
+        square_sum += static_cast<double>(sample) * static_cast<double>(sample);
+        peak = std::max(peak, std::abs(sample));
+    }
+    const float rms = frame_count > 0
+        ? static_cast<float>(std::sqrt(square_sum / static_cast<double>(frame_count)))
+        : 0.0F;
+    capture->rms_level_.store(std::clamp(rms, 0.0F, 1.0F), std::memory_order_relaxed);
+    capture->peak_level_.store(std::clamp(peak, 0.0F, 1.0F), std::memory_order_relaxed);
+    capture->ring_.push(samples, frame_count);
 }
 
 } // namespace dictscribe::asr

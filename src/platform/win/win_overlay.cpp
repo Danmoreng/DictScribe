@@ -1,12 +1,14 @@
 #include "platform/win/win_overlay.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <sstream>
 #include <string_view>
 #include <vector>
 
 #include <dwmapi.h>
+#include <windowsx.h>
 
 #pragma warning(push)
 #pragma warning(disable: 4244 4267)
@@ -26,9 +28,8 @@ namespace dictscribe::win {
 namespace {
 
 constexpr wchar_t kOverlayClass[] = L"DictScribeOverlayWindow";
-constexpr UINT_PTR kAnimationTimer = 1;
 constexpr int kLogicalWidth = 680;
-constexpr int kLogicalHeight = 268;
+constexpr int kLogicalHeight = 228;
 
 constexpr SkColor kBackground = SkColorSetRGB(18, 21, 28);
 constexpr SkColor kSurface = SkColorSetRGB(25, 29, 38);
@@ -118,13 +119,6 @@ SkColor StatusColor(app::DictationMode mode) {
     return kAccent;
 }
 
-bool IsBusy(app::DictationMode mode) {
-    return mode == app::DictationMode::StartingRecording ||
-        mode == app::DictationMode::Recording ||
-        mode == app::DictationMode::Finalizing ||
-        mode == app::DictationMode::Rewriting;
-}
-
 sk_sp<SkTypeface> FindTypeface(
     const sk_sp<SkFontMgr>& manager,
     SkFontStyle style) {
@@ -145,6 +139,7 @@ struct WinOverlay::Impl {
     sk_sp<SkTypeface> semibold;
     app::AppSnapshot snapshot;
     std::string notice;
+    std::array<float, 16> level_history{};
 
     static LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM w_param, LPARAM l_param) {
         Impl* self = reinterpret_cast<Impl*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
@@ -162,13 +157,20 @@ struct WinOverlay::Impl {
             return 0;
         case WM_ERASEBKGND:
             return 1;
-        case WM_TIMER:
-            InvalidateRect(hwnd, nullptr, FALSE);
-            return 0;
         case WM_MOUSEACTIVATE:
             return MA_NOACTIVATE;
-        case WM_NCHITTEST:
-            return HTTRANSPARENT;
+        case WM_NCHITTEST: {
+            POINT point{GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param)};
+            ScreenToClient(hwnd, &point);
+            const int header_height = MulDiv(56, static_cast<int>(self->dpi), 96);
+            return point.y >= 0 && point.y < header_height ? HTCAPTION : HTTRANSPARENT;
+        }
+        case WM_SETCURSOR:
+            if (LOWORD(l_param) == HTCAPTION) {
+                SetCursor(LoadCursorW(nullptr, IDC_SIZEALL));
+                return TRUE;
+            }
+            return DefWindowProcW(hwnd, message, w_param, l_param);
         case WM_DPICHANGED: {
             self->dpi = HIWORD(w_param);
             const auto* suggested = reinterpret_cast<RECT*>(l_param);
@@ -262,72 +264,68 @@ struct WinOverlay::Impl {
             border);
 
         const SkColor status_color = StatusColor(snapshot.mode);
-        const double seconds = static_cast<double>(GetTickCount64()) / 1000.0;
-        const float pulse = snapshot.mode == app::DictationMode::Recording
-            ? static_cast<float>((std::sin(seconds * 5.5) + 1.0) * 0.5)
-            : 0.0F;
-        canvas->drawCircle(28.0F, 29.0F, 5.0F + pulse * 1.5F, Fill(status_color));
+        canvas->drawCircle(28.0F, 29.0F, 5.0F, Fill(status_color));
         DrawText(canvas[0], StatusLabel(snapshot.mode), 43.0F, 34.0F, status_font, kText);
 
-        if (IsBusy(snapshot.mode)) {
-            for (int index = 0; index < 7; ++index) {
-                const float oscillation = static_cast<float>(
-                    (std::sin(seconds * 7.0 + index * 0.85) + 1.0) * 0.5);
-                const float bar_height = snapshot.mode == app::DictationMode::Recording
-                    ? 5.0F + oscillation * 17.0F
-                    : 7.0F + oscillation * 7.0F;
-                const float x = width - 91.0F + index * 9.0F;
+        if (snapshot.mode == app::DictationMode::Recording) {
+            const float start_x = width - 142.0F;
+            for (std::size_t index = 0; index < level_history.size(); ++index) {
+                const float bar_height = 2.0F + level_history[index] * 22.0F;
+                const float x = start_x + static_cast<float>(index) * 7.0F;
                 canvas->drawRoundRect(
-                    SkRect::MakeXYWH(x, 29.0F - bar_height * 0.5F, 4.0F, bar_height),
-                    2.0F,
-                    2.0F,
-                    Fill(index < 4 ? status_color : kMuted));
+                    SkRect::MakeXYWH(x, 29.0F - bar_height * 0.5F, 3.0F, bar_height),
+                    1.5F,
+                    1.5F,
+                    Fill(level_history[index] > 0.08F ? status_color : kSubtle));
             }
         }
 
         canvas->drawLine(24.0F, 55.0F, width - 24.0F, 55.0F, border);
-        const std::string display = !snapshot.rewritten_text.empty()
-            ? snapshot.rewritten_text
-            : snapshot.live_text;
-        const std::string placeholder = snapshot.mode == app::DictationMode::Starting
-            ? "Preparing the local speech and rewrite models…"
-            : "Speak naturally. Your text will appear here and be cleaned locally.";
-        const std::string& body = display.empty() ? placeholder : display;
-        float baseline = 90.0F;
-        for (const auto& line : WrapText(body, body_font, width - 56.0F, 4)) {
-            DrawText(canvas[0], line, 28.0F, baseline, body_font, display.empty() ? kMuted : kText);
-            baseline += 29.0F;
-        }
-
-        const bool has_raw_tail = snapshot.mode == app::DictationMode::Recording &&
-            !snapshot.live_text.empty() && !snapshot.rewritten_text.empty() &&
-            snapshot.live_text != snapshot.rewritten_text;
-        if (has_raw_tail) {
-            std::string raw = snapshot.live_text;
-            if (raw.size() > 100) raw = "…" + raw.substr(raw.size() - 99);
-            DrawText(canvas[0], "LIVE", 28.0F, height - 55.0F, hint_font, kAccent);
-            DrawText(canvas[0], raw, 67.0F, height - 55.0F, small_font, kMuted);
+        std::string display;
+        if (snapshot.mode == app::DictationMode::Recording) {
+            display = snapshot.live_text;
+        } else if (snapshot.mode == app::DictationMode::Rewriting ||
+                   snapshot.mode == app::DictationMode::Finalizing) {
+            display = !snapshot.raw_final_text.empty() ? snapshot.raw_final_text : snapshot.live_text;
         } else {
-            const std::string& secondary = notice.empty() ? snapshot.status : notice;
+            display = !snapshot.rewritten_text.empty() ? snapshot.rewritten_text : snapshot.live_text;
+        }
+        std::string placeholder = "Speak naturally. Your words will appear here.";
+        if (snapshot.mode == app::DictationMode::Starting) {
+            placeholder = "Preparing the local speech and rewrite models…";
+        } else if (snapshot.mode == app::DictationMode::Ready ||
+                   snapshot.mode == app::DictationMode::Complete) {
+            placeholder = "Press Ctrl+Alt+Space in any text field to start dictation.";
+        } else if (snapshot.mode == app::DictationMode::Error && !snapshot.error.empty()) {
+            placeholder = snapshot.error;
+        }
+        const std::string& body = display.empty() ? placeholder : display;
+        float baseline = 88.0F;
+        for (const auto& line : WrapText(body, body_font, width - 56.0F, 4)) {
             DrawText(
                 canvas[0],
-                secondary,
+                line,
                 28.0F,
-                height - 55.0F,
-                small_font,
-                snapshot.error.empty() ? kMuted : kWarning);
+                baseline,
+                body_font,
+                snapshot.mode == app::DictationMode::Error ? kWarning :
+                    (display.empty() ? kMuted : kText));
+            baseline += 27.0F;
         }
 
         canvas->drawRoundRect(
-            SkRect::MakeXYWH(20.0F, height - 38.0F, width - 40.0F, 1.0F),
+            SkRect::MakeXYWH(20.0F, height - 37.0F, width - 40.0F, 1.0F),
             0.5F,
             0.5F,
             Fill(kSurface));
-        const char* hints = snapshot.mode == app::DictationMode::Recording
-            ? "Ctrl+Alt+Space or Enter  Finish     Esc  Cancel"
-            : "Ctrl+Alt+Space  Start or stop dictation";
-        DrawText(canvas[0], hints, 28.0F, height - 16.0F, hint_font, kSubtle);
-        DrawText(canvas[0], "100% local", width - 94.0F, height - 16.0F, hint_font, kSubtle);
+        const char* hints = "Ctrl+Alt+Space  Start dictation     Drag header to move";
+        if (snapshot.mode == app::DictationMode::Recording) {
+            hints = "Enter or Ctrl+Alt+Space  Finish     Esc  Cancel     Drag header to move";
+        } else if (snapshot.mode == app::DictationMode::Finalizing ||
+                   snapshot.mode == app::DictationMode::Rewriting) {
+            hints = "Finishing locally…";
+        }
+        DrawText(canvas[0], hints, 28.0F, height - 15.0F, hint_font, kSubtle);
 
         canvas->restore();
         present();
@@ -353,7 +351,7 @@ bool WinOverlay::create(HINSTANCE instance, std::string& error) {
     }
 
     impl_->hwnd = CreateWindowExW(
-        WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_LAYERED | WS_EX_TRANSPARENT,
+        WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_LAYERED,
         kOverlayClass,
         L"DictScribe",
         WS_POPUP,
@@ -369,7 +367,7 @@ bool WinOverlay::create(HINSTANCE instance, std::string& error) {
         error = "Could not create the DictScribe overlay window.";
         return false;
     }
-    SetLayeredWindowAttributes(impl_->hwnd, 0, 247, LWA_ALPHA);
+    SetLayeredWindowAttributes(impl_->hwnd, 0, 255, LWA_ALPHA);
     const BOOL dark = TRUE;
     DwmSetWindowAttribute(impl_->hwnd, 20, &dark, sizeof(dark));
     const int rounded = 2;
@@ -393,6 +391,17 @@ bool WinOverlay::create(HINSTANCE instance, std::string& error) {
 void WinOverlay::update(const app::AppSnapshot& snapshot, std::string notice) {
     impl_->snapshot = snapshot;
     impl_->notice = std::move(notice);
+    if (snapshot.mode == app::DictationMode::Recording) {
+        std::move(
+            impl_->level_history.begin() + 1,
+            impl_->level_history.end(),
+            impl_->level_history.begin());
+        const float source = std::max(snapshot.audio_rms, snapshot.audio_peak * 0.35F);
+        const float decibels = 20.0F * std::log10(std::max(source, 0.00001F));
+        impl_->level_history.back() = std::clamp((decibels + 55.0F) / 43.0F, 0.0F, 1.0F);
+    } else {
+        impl_->level_history.fill(0.0F);
+    }
     if (visible()) InvalidateRect(impl_->hwnd, nullptr, FALSE);
 }
 
@@ -432,12 +441,10 @@ void WinOverlay::show_near(const TargetContext& target) {
         width,
         height,
         SWP_NOACTIVATE | SWP_SHOWWINDOW);
-    SetTimer(impl_->hwnd, kAnimationTimer, 33, nullptr);
     InvalidateRect(impl_->hwnd, nullptr, FALSE);
 }
 
 void WinOverlay::hide() {
-    KillTimer(impl_->hwnd, kAnimationTimer);
     ShowWindow(impl_->hwnd, SW_HIDE);
 }
 

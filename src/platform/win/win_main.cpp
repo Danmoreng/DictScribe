@@ -3,7 +3,7 @@
 #endif
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include <ole2.h>
+#include <objbase.h>
 #include <shellapi.h>
 
 #include "app/app_controller.hpp"
@@ -205,6 +205,7 @@ private:
         if (id == kCancelHotkey) {
             cancel_dictation();
         } else if (id == kToggleHotkey || id == kAcceptHotkey) {
+            if (session_active_) refresh_target_context();
             toggle_dictation();
         }
     }
@@ -212,7 +213,7 @@ private:
     void toggle_dictation() {
         const app::AppSnapshot snapshot = controller_.snapshot();
         if (snapshot.mode == app::DictationMode::Ready || snapshot.mode == app::DictationMode::Complete) {
-            target_ = CaptureTargetContext(overlay_.window());
+            target_ = CaptureTargetContext(overlay_.window(), control_window_);
             session_active_ = true;
             notice_.clear();
             register_session_hotkeys();
@@ -226,7 +227,7 @@ private:
             return;
         }
         if (snapshot.mode == app::DictationMode::Starting || snapshot.mode == app::DictationMode::Error) {
-            target_ = CaptureTargetContext(overlay_.window());
+            target_ = CaptureTargetContext(overlay_.window(), control_window_);
             overlay_.update(snapshot);
             overlay_.show_near(target_);
         }
@@ -242,6 +243,7 @@ private:
     }
 
     void tick() {
+        if (session_active_) refresh_target_context();
         controller_.tick();
         const app::AppSnapshot snapshot = controller_.snapshot();
         overlay_.update(snapshot, notice_);
@@ -279,11 +281,28 @@ private:
         std::string error;
         if (!InsertText(target_, text, error)) {
             std::string clipboard_error;
-            PutTextOnClipboard(text, clipboard_error);
-            show_notification(
-                L"Text copied to clipboard",
-                L"DictScribe could not safely paste into the original field. Press Ctrl+V to insert it.",
-                NIIF_WARNING);
+            if (PutTextOnClipboard(text, clipboard_error)) {
+                show_notification(
+                    L"Text copied to clipboard",
+                    L"DictScribe could not safely type into the active field. Press Ctrl+V to insert it.",
+                    NIIF_WARNING);
+            } else {
+                show_notification(
+                    L"Text insertion failed",
+                    L"DictScribe is still running, but Windows rejected both text input and clipboard access.",
+                    NIIF_ERROR);
+            }
+        }
+    }
+
+    void refresh_target_context() {
+        const TargetContext candidate = CaptureTargetContext(overlay_.window(), control_window_);
+        if (!candidate.window) return;
+
+        const bool window_changed = candidate.window != target_.window;
+        target_ = candidate;
+        if (window_changed && overlay_.visible()) {
+            overlay_.show_near(target_);
         }
     }
 
@@ -417,13 +436,14 @@ private:
 
 int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-    const HRESULT ole_result = OleInitialize(nullptr);
-    const bool uninitialize_ole = SUCCEEDED(ole_result);
+    const HRESULT com_result = CoInitializeEx(
+        nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    const bool uninitialize_com = SUCCEEDED(com_result);
 
     HANDLE instance_mutex = CreateMutexW(nullptr, TRUE, dictscribe::win::kSingleInstanceName);
     if (instance_mutex && GetLastError() == ERROR_ALREADY_EXISTS) {
         CloseHandle(instance_mutex);
-        if (uninitialize_ole) OleUninitialize();
+        if (uninitialize_com) CoUninitialize();
         return 0;
     }
 
@@ -437,13 +457,13 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
             L"DictScribe",
             MB_OK | MB_ICONINFORMATION);
         if (instance_mutex) CloseHandle(instance_mutex);
-        if (uninitialize_ole) OleUninitialize();
+        if (uninitialize_com) CoUninitialize();
         return 0;
     }
 
     dictscribe::win::WinApp app;
     const int result = app.initialize(instance, discovery) ? app.run() : 1;
     if (instance_mutex) CloseHandle(instance_mutex);
-    if (uninitialize_ole) OleUninitialize();
+    if (uninitialize_com) CoUninitialize();
     return result;
 }

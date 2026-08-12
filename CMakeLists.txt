@@ -72,6 +72,20 @@ target_compile_definitions(dictscribe-app-controller-tests PRIVATE
 )
 add_test(NAME dictscribe_app_controller COMMAND dictscribe-app-controller-tests)
 
+if(WIN32)
+    add_executable(dictscribe-win-text-injector-tests
+        tests/win_text_injector_test.cpp
+        src/platform/win/win_text_injector.cpp
+    )
+    target_include_directories(dictscribe-win-text-injector-tests PRIVATE src)
+    target_compile_definitions(dictscribe-win-text-injector-tests PRIVATE UNICODE _UNICODE)
+    if(MSVC)
+        target_compile_options(dictscribe-win-text-injector-tests PRIVATE /utf-8)
+    endif()
+    target_link_libraries(dictscribe-win-text-injector-tests PRIVATE user32.lib)
+    add_test(NAME dictscribe_win_text_injector COMMAND dictscribe-win-text-injector-tests)
+endif()
+
 if(DICTSCRIBE_BUILD_UI)
     set(SKIA_DIR "" CACHE PATH "Path to the Skia source tree")
     set(SKIA_OUT_DIR "" CACHE PATH "Path to the Skia static build output")

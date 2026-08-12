@@ -119,9 +119,20 @@ any text field, press `Ctrl+Alt+Space` to start dictation. A topmost,
 non-activating overlay appears above the active text caret; if Windows does not
 expose a caret rectangle, it appears near the mouse pointer instead. Press
 `Ctrl+Alt+Space` or `Enter` to finish, or `Escape` to cancel. Completed text is
-pasted into the window that was active when dictation started. If Windows
-blocks safe focus restoration, the text remains on the clipboard and a
+typed into the most recently active non-DictScribe window. This also covers a
+recording started from the tray before a text field was selected: click the
+destination field at any time before finalization completes. DictScribe never
+uses one of its own windows as an insertion target. Direct Unicode input leaves
+the existing clipboard untouched. If Windows blocks safe focus restoration or
+no external target exists, the completed text is copied to the clipboard and a
 notification explains that it can be inserted with `Ctrl+V`.
+
+The overlay is visually opaque. Its header can be dragged without activating
+the window; the transcript and footer remain click-through so the underlying
+application stays usable. During recording, the header meter visualizes actual
+microphone RMS/peak samples. The body shows one live ASR transcript while
+recording and one cleaned result after finalization, never simultaneous raw and
+rewritten copies.
 
 Right-click the tray icon to start or stop dictation, select `Auto`, `Deutsch`,
 or `English`, enable or disable the final cleanup pass, or quit DictScribe. The

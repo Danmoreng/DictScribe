@@ -96,6 +96,8 @@ void AppController::toggle_recording() {
         state_.raw_final_text.clear();
         state_.rewritten_text.clear();
         state_.rewrite_in_progress = rewrite_in_flight_;
+        state_.audio_rms = 0.0F;
+        state_.audio_peak = 0.0F;
         state_.error.clear();
         finalization_waiting_ = false;
         pending_live_cleanup_ = false;
@@ -115,6 +117,8 @@ void AppController::toggle_recording() {
 
     if (state_.mode == DictationMode::Recording) {
         state_.mode = DictationMode::Finalizing;
+        state_.audio_rms = 0.0F;
+        state_.audio_peak = 0.0F;
         state_.status = "Finalizing speech recognition...";
         if (!asr_.send({
                 {"v", 1},
@@ -135,6 +139,8 @@ void AppController::cancel_recording() {
     }
     std::string error;
     state_.mode = DictationMode::Cancelling;
+    state_.audio_rms = 0.0F;
+    state_.audio_peak = 0.0F;
     state_.status = "Cancelling dictation...";
     if (!asr_.send({
             {"v", 1},
@@ -200,9 +206,17 @@ void AppController::handle_asr_message(const nlohmann::json& message) {
     } else if (type == "recording_started") {
         state_.mode = DictationMode::Recording;
         state_.status = "Listening - live cleanup starts after a short pause";
+    } else if (type == "audio_level") {
+        if (state_.mode == DictationMode::Recording &&
+            message.value("sessionId", "") == session_id_) {
+            state_.audio_rms = std::clamp(message.value("rms", 0.0F), 0.0F, 1.0F);
+            state_.audio_peak = std::clamp(message.value("peak", 0.0F), 0.0F, 1.0F);
+        }
     } else if (type == "transcript_update") {
         update_transcript_locked(message.value("text", ""));
     } else if (type == "recording_finalized") {
+        state_.audio_rms = 0.0F;
+        state_.audio_peak = 0.0F;
         state_.raw_final_text = message.value("text", state_.live_text);
         update_transcript_locked(state_.raw_final_text);
         pending_live_cleanup_ = false;
@@ -227,6 +241,8 @@ void AppController::handle_asr_message(const nlohmann::json& message) {
         }
     } else if (type == "recording_cancelled") {
         state_.mode = DictationMode::Ready;
+        state_.audio_rms = 0.0F;
+        state_.audio_peak = 0.0F;
         state_.status = "Cancelled - ready for another dictation";
         state_.live_text.clear();
         state_.raw_final_text.clear();
@@ -243,6 +259,8 @@ void AppController::handle_asr_message(const nlohmann::json& message) {
         const std::string code = message.value("code", "");
         if (recoverable && code == "MICROPHONE_UNAVAILABLE") {
             state_.mode = DictationMode::Ready;
+            state_.audio_rms = 0.0F;
+            state_.audio_peak = 0.0F;
             state_.status = "Microphone unavailable - check the default input and try again";
             state_.error = message_text;
             session_id_.clear();
@@ -412,6 +430,8 @@ void AppController::finish_without_final_cleanup_locked() {
 
 void AppController::set_error_locked(std::string message) {
     state_.mode = DictationMode::Error;
+    state_.audio_rms = 0.0F;
+    state_.audio_peak = 0.0F;
     state_.status = "DictScribe needs attention";
     state_.error = std::move(message);
 }

@@ -40,12 +40,16 @@ Important events:
 ```json
 {"v":1,"type":"ready","seq":2,"engine":"nemo-speech.cpp"}
 {"v":1,"type":"recording_started","seq":4,"sessionId":"session-1"}
-{"v":1,"type":"transcript_update","seq":5,"sessionId":"session-1","text":"Hallo"}
-{"v":1,"type":"recording_finalized","seq":6,"sessionId":"session-1","text":"Hallo"}
+{"v":1,"type":"audio_level","seq":5,"sessionId":"session-1","rms":0.08,"peak":0.31}
+{"v":1,"type":"transcript_update","seq":6,"sessionId":"session-1","text":"Hallo"}
+{"v":1,"type":"recording_finalized","seq":7,"sessionId":"session-1","text":"Hallo"}
 ```
 
 Interim NeMo hypotheses are cumulative and may be revised. A
 `transcript_update` therefore replaces the visible hypothesis.
+`audio_level` is emitted approximately every 50 ms while recording. Its
+normalized `rms` and `peak` fields describe actual microphone samples and are
+intended for a responsive input meter; they are not synthesized UI animation.
 
 ## Rewrite worker
 

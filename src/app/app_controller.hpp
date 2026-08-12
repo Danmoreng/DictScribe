@@ -37,6 +37,8 @@ struct AppSnapshot {
     bool rewrite_ready = false;
     bool rewrite_in_progress = false;
     bool final_cleanup_enabled = true;
+    float audio_rms = 0.0F;
+    float audio_peak = 0.0F;
     std::string status = "Starting local models...";
     std::string live_text;
     std::string raw_final_text;

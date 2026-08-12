@@ -34,6 +34,12 @@ int main() {
             ++session_number;
             const std::string session = command.value("sessionId", "");
             emit({{"type", "recording_started"}, {"sessionId", session}});
+            emit({
+                {"type", "audio_level"},
+                {"sessionId", session},
+                {"rms", 0.18},
+                {"peak", 0.72},
+            });
             emit({{"type", "transcript_update"}, {"sessionId", session}, {"text", "Ich äh teste"}});
             std::this_thread::sleep_for(std::chrono::milliseconds(80));
             emit({

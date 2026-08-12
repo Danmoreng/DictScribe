@@ -35,6 +35,12 @@ public:
     bool start(std::string& error);
     void stop();
     [[nodiscard]] bool running() const { return running_; }
+    [[nodiscard]] float rms_level() const {
+        return rms_level_.load(std::memory_order_relaxed);
+    }
+    [[nodiscard]] float peak_level() const {
+        return peak_level_.load(std::memory_order_relaxed);
+    }
 
 private:
     static void data_callback(
@@ -47,6 +53,8 @@ private:
     ma_device device_{};
     bool initialized_ = false;
     std::atomic<bool> running_{false};
+    std::atomic<float> rms_level_{0.0F};
+    std::atomic<float> peak_level_{0.0F};
 };
 
 } // namespace dictscribe::asr

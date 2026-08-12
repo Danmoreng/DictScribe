@@ -81,6 +81,7 @@ void RuntimeController::shutdown() {
         capture_.stop();
     }
     join_worker();
+    join_meter();
     engine_.cancel();
     state_ = State::Exited;
     should_exit_ = true;
@@ -158,6 +159,7 @@ void RuntimeController::start(const nlohmann::json& command) {
         {"audioDevice", "Default"},
     });
     worker_ = std::thread(&RuntimeController::worker_loop, this, session_id_);
+    meter_ = std::thread(&RuntimeController::meter_loop, this, session_id_);
 }
 
 void RuntimeController::stop(const nlohmann::json& command, bool cancelled) {
@@ -180,6 +182,7 @@ void RuntimeController::stop(const nlohmann::json& command, bool cancelled) {
 
     acknowledge(command);
     join_worker();
+    join_meter();
     if (cancelled) {
         engine_.cancel();
         emit({
@@ -206,6 +209,19 @@ void RuntimeController::stop(const nlohmann::json& command, bool cancelled) {
     std::lock_guard lock(state_mutex_);
     session_id_.clear();
     state_ = State::Ready;
+}
+
+void RuntimeController::meter_loop(std::string session_id) {
+    while (capture_.running()) {
+        emit({
+            {"v", protocol::kVersion},
+            {"type", "audio_level"},
+            {"sessionId", session_id},
+            {"rms", capture_.rms_level()},
+            {"peak", capture_.peak_level()},
+        });
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
 }
 
 void RuntimeController::worker_loop(std::string session_id) {
@@ -258,6 +274,12 @@ void RuntimeController::emit_feed(const FeedResult& result, const std::string& s
 void RuntimeController::join_worker() {
     if (worker_.joinable()) {
         worker_.join();
+    }
+}
+
+void RuntimeController::join_meter() {
+    if (meter_.joinable()) {
+        meter_.join();
     }
 }
 

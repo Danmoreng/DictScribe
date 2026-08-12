@@ -50,12 +50,14 @@ int main() {
     });
     assert(live.rewritten_text.starts_with("de:"));
     assert(!live.rewrite_in_progress);
+    assert(live.audio_rms > 0.17F && live.audio_peak > 0.71F);
 
     controller.toggle_recording();
     const auto with_final = wait_until(controller, [](const auto& state) {
         return state.mode == dictscribe::app::DictationMode::Complete;
     });
     assert(with_final.rewritten_text == "de:Ich teste llama_rewriter.cpp weiter final 1");
+    assert(with_final.audio_rms == 0.0F && with_final.audio_peak == 0.0F);
 
     controller.set_final_cleanup_enabled(false);
     controller.toggle_recording();
