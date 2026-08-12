@@ -72,6 +72,28 @@ int main() {
     assert(live_only.rewritten_text == "de:Ich äh teste llama_rewriter.cpp weiter 2");
     assert(!live_only.final_cleanup_enabled);
 
+    controller.set_language("en");
+    controller.toggle_recording();
+    wait_until(controller, [](const auto& state) {
+        return state.mode == dictscribe::app::DictationMode::Recording &&
+            state.live_text.find("further 3") != std::string::npos;
+    });
+    controller.set_language("de");
+    const auto switched = wait_until(controller, [](const auto& state) {
+        return state.mode == dictscribe::app::DictationMode::Recording &&
+            state.language == "de" &&
+            state.live_text.find("final 3") != std::string::npos &&
+            state.live_text.find("weiter 4") != std::string::npos;
+    });
+    assert(switched.live_text ==
+        "Ich teste llama_rewriter.cpp weiter final 3 Ich äh teste llama_rewriter.cpp weiter 4");
+    controller.toggle_recording();
+    const auto switched_final = wait_until(controller, [](const auto& state) {
+        return state.mode == dictscribe::app::DictationMode::Complete;
+    });
+    assert(switched_final.raw_final_text ==
+        "Ich teste llama_rewriter.cpp weiter final 3 Ich teste llama_rewriter.cpp weiter final 4");
+
     std::cout << "Live cleanup controller tests passed\n";
     return 0;
 }

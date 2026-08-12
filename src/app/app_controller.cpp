@@ -1,6 +1,7 @@
 #include "app/app_controller.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <utility>
 
@@ -13,6 +14,16 @@ constexpr auto kLiveCleanupMaximumDelay = std::chrono::milliseconds(2000);
 
 std::string FileName(const std::filesystem::path& path) {
     return path.filename().string();
+}
+
+std::string AppendTranscript(const std::string& prefix, const std::string& text) {
+    if (prefix.empty()) return text;
+    if (text.empty()) return prefix;
+    if (std::isspace(static_cast<unsigned char>(prefix.back())) ||
+        std::isspace(static_cast<unsigned char>(text.front()))) {
+        return prefix + text;
+    }
+    return prefix + " " + text;
 }
 
 } // namespace
@@ -89,33 +100,13 @@ void AppController::set_startup_error(std::string message) {
 
 void AppController::toggle_recording() {
     std::lock_guard lock(mutex_);
-    std::string error;
     if (state_.mode == DictationMode::Ready || state_.mode == DictationMode::Complete) {
-        session_id_ = next_id_locked("session");
-        state_.live_text.clear();
-        state_.raw_final_text.clear();
-        state_.rewritten_text.clear();
-        state_.rewrite_in_progress = rewrite_in_flight_;
-        state_.audio_rms = 0.0F;
-        state_.audio_peak = 0.0F;
-        state_.error.clear();
-        finalization_waiting_ = false;
-        pending_live_cleanup_ = false;
-        state_.mode = DictationMode::StartingRecording;
-        state_.status = "Opening the default microphone...";
-        if (!asr_.send({
-                {"v", 1},
-                {"type", "start"},
-                {"id", next_id_locked("start")},
-                {"sessionId", session_id_},
-                {"language", state_.language},
-            }, error)) {
-            set_error_locked(std::move(error));
-        }
+        start_recording_locked(true);
         return;
     }
 
     if (state_.mode == DictationMode::Recording) {
+        std::string error;
         state_.mode = DictationMode::Finalizing;
         state_.audio_rms = 0.0F;
         state_.audio_peak = 0.0F;
@@ -129,6 +120,68 @@ void AppController::toggle_recording() {
             set_error_locked(std::move(error));
         }
     }
+}
+
+bool AppController::start_recording_locked(bool clear_transcript) {
+    if (clear_transcript) {
+        state_.live_text.clear();
+        state_.raw_final_text.clear();
+        state_.rewritten_text.clear();
+        state_.error.clear();
+        session_prefix_.clear();
+        language_restart_pending_ = false;
+    }
+    current_session_text_.clear();
+    session_id_ = next_id_locked("session");
+    state_.rewrite_in_progress = rewrite_in_flight_;
+    state_.audio_rms = 0.0F;
+    state_.audio_peak = 0.0F;
+    finalization_waiting_ = false;
+    pending_live_cleanup_ = false;
+    state_.mode = DictationMode::StartingRecording;
+    state_.status = clear_transcript
+        ? "Opening the default microphone..."
+        : "Restarting speech recognition with the selected language...";
+
+    std::string error;
+    if (!asr_.send({
+            {"v", 1},
+            {"type", "start"},
+            {"id", next_id_locked("start")},
+            {"sessionId", session_id_},
+            {"language", state_.language},
+        }, error)) {
+        language_restart_pending_ = false;
+        set_error_locked(std::move(error));
+        return false;
+    }
+    return true;
+}
+
+bool AppController::stop_for_language_change_locked() {
+    language_restart_pending_ = true;
+    if (state_.mode == DictationMode::StartingRecording) {
+        state_.status = "Waiting for the microphone before switching language...";
+        return true;
+    }
+    if (state_.mode != DictationMode::Recording) return false;
+
+    state_.mode = DictationMode::Finalizing;
+    state_.audio_rms = 0.0F;
+    state_.audio_peak = 0.0F;
+    state_.status = "Switching speech recognition language...";
+    std::string error;
+    if (!asr_.send({
+            {"v", 1},
+            {"type", "stop"},
+            {"id", next_id_locked("language-stop")},
+            {"sessionId", session_id_},
+        }, error)) {
+        language_restart_pending_ = false;
+        set_error_locked(std::move(error));
+        return false;
+    }
+    return true;
 }
 
 void AppController::cancel_recording() {
@@ -160,7 +213,17 @@ void AppController::set_language(std::string language) {
     if (language != "auto" && language != "de" && language != "en") {
         return;
     }
+    if (language == state_.language) return;
     state_.language = std::move(language);
+    if (state_.mode == DictationMode::Recording ||
+        state_.mode == DictationMode::StartingRecording) {
+        stop_for_language_change_locked();
+        return;
+    }
+    if (state_.mode == DictationMode::Finalizing && language_restart_pending_) {
+        state_.status = "Switching speech recognition language...";
+        return;
+    }
     if (state_.mode == DictationMode::Ready || state_.mode == DictationMode::Complete) {
         state_.status = "Language changed - ready for dictation";
     }
@@ -204,8 +267,12 @@ void AppController::handle_asr_message(const nlohmann::json& message) {
         state_.asr_ready = true;
         update_ready_state_locked();
     } else if (type == "recording_started") {
+        if (message.value("sessionId", "") != session_id_) return;
         state_.mode = DictationMode::Recording;
         state_.status = "Listening - live cleanup starts after a short pause";
+        if (language_restart_pending_) {
+            stop_for_language_change_locked();
+        }
     } else if (type == "audio_level") {
         if (state_.mode == DictationMode::Recording &&
             message.value("sessionId", "") == session_id_) {
@@ -213,13 +280,24 @@ void AppController::handle_asr_message(const nlohmann::json& message) {
             state_.audio_peak = std::clamp(message.value("peak", 0.0F), 0.0F, 1.0F);
         }
     } else if (type == "transcript_update") {
-        update_transcript_locked(message.value("text", ""));
+        if (message.value("sessionId", "") != session_id_) return;
+        current_session_text_ = message.value("text", "");
+        update_transcript_locked(AppendTranscript(session_prefix_, current_session_text_));
     } else if (type == "recording_finalized") {
+        if (message.value("sessionId", "") != session_id_) return;
         state_.audio_rms = 0.0F;
         state_.audio_peak = 0.0F;
-        state_.raw_final_text = message.value("text", state_.live_text);
+        current_session_text_ = message.value("text", current_session_text_);
+        state_.raw_final_text = AppendTranscript(session_prefix_, current_session_text_);
         update_transcript_locked(state_.raw_final_text);
         pending_live_cleanup_ = false;
+        if (language_restart_pending_) {
+            language_restart_pending_ = false;
+            session_prefix_ = state_.raw_final_text;
+            current_session_text_.clear();
+            start_recording_locked(false);
+            return;
+        }
         if (state_.raw_final_text.empty()) {
             state_.mode = DictationMode::Complete;
             state_.status = "No speech recognized - press Enter to try again";
@@ -249,8 +327,11 @@ void AppController::handle_asr_message(const nlohmann::json& message) {
         state_.rewritten_text.clear();
         state_.rewrite_in_progress = false;
         finalization_waiting_ = false;
+        language_restart_pending_ = false;
         pending_live_cleanup_ = false;
         session_id_.clear();
+        session_prefix_.clear();
+        current_session_text_.clear();
     } else if (type == "warning") {
         state_.status = message.value("message", "Audio processing warning");
     } else if (type == "error") {
@@ -454,6 +535,9 @@ bool CanCancel(const AppSnapshot& snapshot) {
 bool CanSetLanguage(const AppSnapshot& snapshot) {
     return snapshot.mode == DictationMode::Starting ||
         snapshot.mode == DictationMode::Ready ||
+        snapshot.mode == DictationMode::StartingRecording ||
+        snapshot.mode == DictationMode::Recording ||
+        snapshot.mode == DictationMode::Finalizing ||
         snapshot.mode == DictationMode::Complete ||
         snapshot.mode == DictationMode::Error;
 }

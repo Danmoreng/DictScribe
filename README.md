@@ -128,11 +128,17 @@ no external target exists, the completed text is copied to the clipboard and a
 notification explains that it can be inserted with `Ctrl+V`.
 
 The overlay is visually opaque. Its header can be dragged without activating
-the window; the transcript and footer remain click-through so the underlying
-application stays usable. During recording, the header meter visualizes actual
-microphone RMS/peak samples. The body shows one live ASR transcript while
-recording and one cleaned result after finalization, never simultaneous raw and
-rewritten copies.
+the window. Its initial caret/cursor placement remains fixed when the user
+switches applications; foreground tracking changes only the eventual insertion
+target. The compact transcript type allows the window to grow with its content
+up to a bounded height. Longer text can be navigated with the mouse wheel or
+the draggable scrollbar without activating the overlay. During recording, the
+header shows the selected language and visualizes actual microphone RMS/peak
+samples. The language badge opens a menu. Changing it during dictation finalizes
+the current ASR segment, preserves its text, and immediately starts a new audio
+session with the selected language. The body shows one live ASR transcript while recording and one cleaned
+result after finalization, never simultaneous raw and rewritten copies. The
+footer presents the relevant `Enter`, `Escape`, and `Ctrl+Alt+Space` shortcuts.
 
 Right-click the tray icon to start or stop dictation, select `Auto`, `Deutsch`,
 or `English`, enable or disable the final cleanup pass, or quit DictScribe. The

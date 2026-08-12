@@ -67,6 +67,8 @@ public:
     [[nodiscard]] AppSnapshot snapshot() const;
 
 private:
+    bool start_recording_locked(bool clear_transcript);
+    bool stop_for_language_change_locked();
     void handle_asr_message(const nlohmann::json& message);
     void handle_rewrite_message(const nlohmann::json& message);
     void update_ready_state_locked();
@@ -84,12 +86,15 @@ private:
     bool rewrite_in_flight_ = false;
     bool active_rewrite_is_final_ = false;
     bool finalization_waiting_ = false;
+    bool language_restart_pending_ = false;
     bool pending_live_cleanup_ = false;
     std::chrono::steady_clock::time_point live_cleanup_pending_since_{};
     std::chrono::steady_clock::time_point live_cleanup_due_{};
     std::string active_rewrite_id_;
     std::string active_rewrite_session_id_;
     std::string session_id_;
+    std::string session_prefix_;
+    std::string current_session_text_;
 };
 
 [[nodiscard]] bool CanToggle(const AppSnapshot& snapshot);

@@ -14,6 +14,7 @@
 #include <array>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace dictscribe::win {
@@ -96,6 +97,8 @@ public:
             MessageBoxA(nullptr, error.c_str(), "DictScribe", MB_ICONERROR | MB_OK);
             return false;
         }
+        overlay_.set_language_handler(
+            [this](std::string language) { controller_.set_language(std::move(language)); });
 
         WNDCLASSEXW window_class{};
         window_class.cbSize = sizeof(window_class);
@@ -298,12 +301,7 @@ private:
     void refresh_target_context() {
         const TargetContext candidate = CaptureTargetContext(overlay_.window(), control_window_);
         if (!candidate.window) return;
-
-        const bool window_changed = candidate.window != target_.window;
         target_ = candidate;
-        if (window_changed && overlay_.visible()) {
-            overlay_.show_near(target_);
-        }
     }
 
     void register_session_hotkeys() {

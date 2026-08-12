@@ -22,7 +22,8 @@ int main() {
         const auto command = nlohmann::json::parse(line);
         const std::string type = command.value("type", "");
         if (type == "start") {
-            if (command.value("language", "") != "de") {
+            const std::string language = command.value("language", "");
+            if (language != "auto" && language != "de" && language != "en") {
                 emit({
                     {"type", "error"},
                     {"code", "WRONG_TEST_LANGUAGE"},
@@ -40,18 +41,24 @@ int main() {
                 {"rms", 0.18},
                 {"peak", 0.72},
             });
-            emit({{"type", "transcript_update"}, {"sessionId", session}, {"text", "Ich äh teste"}});
+            const std::string first = language == "en" ? "I am testing" : "Ich äh teste";
+            const std::string second = language == "en"
+                ? "I am testing llama_rewriter.cpp"
+                : "Ich äh teste llama_rewriter.cpp";
+            const std::string third = second + (language == "en" ? " further " : " weiter ") +
+                std::to_string(session_number);
+            emit({{"type", "transcript_update"}, {"sessionId", session}, {"text", first}});
             std::this_thread::sleep_for(std::chrono::milliseconds(80));
             emit({
                 {"type", "transcript_update"},
                 {"sessionId", session},
-                {"text", "Ich äh teste llama_rewriter.cpp"},
+                {"text", second},
             });
             std::this_thread::sleep_for(std::chrono::milliseconds(80));
             emit({
                 {"type", "transcript_update"},
                 {"sessionId", session},
-                {"text", "Ich äh teste llama_rewriter.cpp weiter " + std::to_string(session_number)},
+                {"text", third},
             });
         } else if (type == "stop") {
             const std::string session = command.value("sessionId", "");

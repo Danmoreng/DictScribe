@@ -9,6 +9,7 @@
 #include "app/app_controller.hpp"
 #include "platform/win/win_text_injector.hpp"
 
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -23,6 +24,7 @@ public:
     WinOverlay& operator=(const WinOverlay&) = delete;
 
     bool create(HINSTANCE instance, std::string& error);
+    void set_language_handler(std::function<void(std::string)> handler);
     void update(const app::AppSnapshot& snapshot, std::string notice = {});
     void show_near(const TargetContext& target);
     void hide();
