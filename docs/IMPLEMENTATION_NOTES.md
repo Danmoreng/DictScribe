@@ -1,5 +1,18 @@
 # Implementation notes
 
+## 2026-08-12: incremental cleanup direction
+
+The current cumulative whole-transcript live rewrite is a prototype, not the
+intended production architecture. The agreed replacement uses a frozen prefix,
+a bounded read-only context suffix, a small editable cleaned tail, and only the
+new stable ASR span. The model will return a grammar-constrained JSON object
+containing only the replacement tail. Stop/insertion will not wait for cleanup,
+and the target design has no final full-transcript pass.
+
+The full model contract, controller algorithm, fallback rules, GPU/model
+benchmark plan, implementation order, and acceptance criteria are documented
+in [Incremental cleanup design](INCREMENTAL_CLEANUP_DESIGN.md).
+
 ## 2026-08-12: initial dependency and process architecture
 
 The initial bootstrap uses the newest upstream states available on this date:

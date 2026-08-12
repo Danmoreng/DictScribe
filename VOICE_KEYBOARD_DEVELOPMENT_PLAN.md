@@ -47,9 +47,11 @@ The application:
 1. captures microphone audio,
 2. transcribes it locally with NVIDIA Nemotron ASR,
 3. displays the transcript live in a floating launcher-like overlay,
-4. incrementally shows locally AI-cleaned text,
-5. performs one final local rewrite when dictation ends,
-6. inserts the final text into the application/text field that was active when dictation started.
+4. optionally applies bounded incremental local cleanup,
+5. immediately composes the best available cleaned and raw spans when dictation
+   ends,
+6. inserts that text into the application/text field that was active when
+   dictation started.
 
 The experience should feel closer to a keyboard/input method than to a voice assistant.
 
@@ -64,7 +66,7 @@ Nemotron Streaming ASR
     ↓
 Live raw/stable transcript
     ↓
-Small local LLM via llama.cpp
+Optional commands-only or local LLM cleanup
     ↓
 Live cleaned transcript
     ↓
@@ -674,7 +676,6 @@ enum class DictationState {
     Starting,
     Recording,
     FinalizingAsr,
-    FinalizingRewrite,
     Committing,
     Cancelling,
     Error,
@@ -692,8 +693,6 @@ Recording
   ↓ PTT release / second toggle / Enter
 FinalizingAsr
   ↓ ASR final
-FinalizingRewrite
-  ↓ LLM final
 Committing
   ↓ text inserted
 Idle
@@ -1100,6 +1099,10 @@ Useful as an automated signal, but do not rely on it alone.
 
 # 19. Rewrite Prompt
 
+The original free-text prompt concept below is superseded for incremental
+cleanup by the structured input and grammar-constrained JSON output in
+[`docs/INCREMENTAL_CLEANUP_DESIGN.md`](docs/INCREMENTAL_CLEANUP_DESIGN.md).
+
 Use an extremely constrained prompt.
 
 Initial prompt concept:
@@ -1199,9 +1202,15 @@ During recording:
 At end of recording:
 
 1. finalize ASR
-2. run one final rewrite over the entire utterance
-3. show final text briefly or immediately commit
-4. insert into target
+2. do not wait for an in-flight rewrite
+3. combine the accepted cleaned prefix and tail with deterministic/raw pending
+   ASR text
+4. insert into the target immediately
+5. discard any rewrite result that arrives for the closed revision
+
+There is no final full-transcript cleanup. The detailed rolling-window state,
+JSON model contract, validation rules, and fallback behavior are specified in
+[`docs/INCREMENTAL_CLEANUP_DESIGN.md`](docs/INCREMENTAL_CLEANUP_DESIGN.md).
 
 ---
 
@@ -1808,18 +1817,20 @@ One model + quant is selected and documented as the fixed production rewrite mod
 
 ---
 
-## Phase 5 — Final rewrite
+## Phase 5 — Bounded incremental rewrite foundation
 
 Goal:
 
-Improve finished dictation before insertion.
+Improve stable dictation spans without making cleanup part of the insertion
+critical path.
 
 Tasks:
 
 - integrate benchmark winner
-- constrained prompt
+- frozen-prefix, editable-tail, stable-raw, and unstable-raw state
+- structured input and grammar-constrained JSON output
 - known-term support
-- final rewrite state
+- revision and stale-result handling
 - cancellation
 - timeouts/error fallback
 
@@ -1831,9 +1842,9 @@ Acceptance:
 
 ```text
 speech
-→ ASR final
-→ rewrite
-→ cleaned text inserted
+→ stable ASR span
+→ bounded tail rewrite
+→ immediate best-available text insertion
 ```
 
 with no meaning-changing hallucinations in benchmark/manual tests.
@@ -1854,7 +1865,7 @@ Tasks:
 - cancellation of stale results
 - raw-tail rendering
 - cleaned-prefix rendering
-- final full rewrite
+- immediate non-blocking insertion with no final full rewrite
 
 Acceptance:
 
@@ -2113,7 +2124,8 @@ Production settings should remain minimal.
 
 - mock ASR stream
 - mock LLM stream
-- final rewrite fallback
+- immediate insertion while a rewrite is in flight
+- invalid/stale tail-replacement fallback
 - cancellation
 - target-window loss
 
