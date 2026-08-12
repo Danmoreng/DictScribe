@@ -1,0 +1,128 @@
+cmake_minimum_required(VERSION 3.26)
+project(DictScribe VERSION 0.1.0 LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+option(DICTSCRIBE_BUILD_UI "Build the Skia desktop test UI" OFF)
+
+enable_testing()
+
+add_library(dictscribe_protocol STATIC
+    src/protocol/jsonl_protocol.cpp
+)
+target_include_directories(dictscribe_protocol
+    PUBLIC include
+    PRIVATE third_party/nlohmann-json/single_include
+)
+
+add_executable(dictscribe-protocol-tests
+    tests/jsonl_protocol_test.cpp
+)
+target_link_libraries(dictscribe-protocol-tests PRIVATE dictscribe_protocol)
+target_include_directories(dictscribe-protocol-tests PRIVATE
+    third_party/nlohmann-json/single_include
+)
+add_test(NAME dictscribe_protocol COMMAND dictscribe-protocol-tests)
+
+add_executable(dictscribe-language-guard-tests
+    tests/language_guard_test.cpp
+    src/workers/rewrite/language_guard.cpp
+)
+target_include_directories(dictscribe-language-guard-tests PRIVATE src)
+add_test(NAME dictscribe_language_guard COMMAND dictscribe-language-guard-tests)
+
+find_package(Threads REQUIRED)
+
+add_executable(dictscribe-fake-asr-worker tests/fake_asr_worker.cpp)
+add_executable(dictscribe-fake-rewrite-worker tests/fake_rewrite_worker.cpp)
+foreach(fake_worker dictscribe-fake-asr-worker dictscribe-fake-rewrite-worker)
+    target_include_directories(${fake_worker} PRIVATE third_party/nlohmann-json/single_include)
+endforeach()
+
+add_executable(dictscribe-app-controller-tests
+    tests/app_controller_live_test.cpp
+    src/app/app_controller.cpp
+    src/app/worker_process.cpp
+)
+target_include_directories(dictscribe-app-controller-tests PRIVATE
+    src
+    third_party/nlohmann-json/single_include
+)
+target_link_libraries(dictscribe-app-controller-tests PRIVATE dictscribe_protocol Threads::Threads)
+target_compile_definitions(dictscribe-app-controller-tests PRIVATE
+    DICTSCRIBE_FAKE_ASR_WORKER="$<TARGET_FILE:dictscribe-fake-asr-worker>"
+    DICTSCRIBE_FAKE_REWRITE_WORKER="$<TARGET_FILE:dictscribe-fake-rewrite-worker>"
+)
+add_test(NAME dictscribe_app_controller COMMAND dictscribe-app-controller-tests)
+
+if(DICTSCRIBE_BUILD_UI)
+    if(NOT UNIX OR APPLE)
+        message(FATAL_ERROR "The first DictScribe UI host currently supports Linux/X11 only")
+    endif()
+
+    include(FetchContent)
+    set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(GLFW_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+    set(GLFW_INSTALL OFF CACHE BOOL "" FORCE)
+    set(GLFW_BUILD_X11 ON CACHE BOOL "" FORCE)
+    set(GLFW_BUILD_WAYLAND OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(
+        glfw
+        GIT_REPOSITORY https://github.com/glfw/glfw.git
+        GIT_TAG 3.4
+    )
+    FetchContent_MakeAvailable(glfw)
+
+    set(SKIA_DIR "" CACHE PATH "Path to the Skia source tree")
+    set(SKIA_OUT_DIR "" CACHE PATH "Path to the Skia static build output")
+    if(NOT EXISTS "${SKIA_DIR}/include/core/SkCanvas.h")
+        message(FATAL_ERROR "SKIA_DIR does not point to a Skia source tree")
+    endif()
+    if(NOT EXISTS "${SKIA_OUT_DIR}/libskia.a")
+        message(FATAL_ERROR "SKIA_OUT_DIR does not contain libskia.a")
+    endif()
+
+    find_package(OpenGL REQUIRED)
+    find_package(X11 REQUIRED)
+    find_package(Freetype REQUIRED)
+    find_package(Fontconfig REQUIRED)
+
+    add_executable(dictscribe
+        src/app/app_controller.cpp
+        src/app/main.cpp
+        src/app/model_discovery.cpp
+        src/app/worker_process.cpp
+        src/ui/dictation_window.cpp
+        src/ui/skia_surface.cpp
+    )
+    target_compile_definitions(dictscribe PRIVATE
+        DICTSCRIBE_PROJECT_ROOT="${CMAKE_CURRENT_SOURCE_DIR}"
+        DICTSCRIBE_RUNTIME_VERSION="${PROJECT_VERSION}"
+    )
+    target_include_directories(dictscribe PRIVATE
+        src
+        third_party/nlohmann-json/single_include
+        "${SKIA_DIR}"
+        "${SKIA_DIR}/include/core"
+        "${SKIA_DIR}/include/config"
+        "${SKIA_DIR}/include/gpu"
+        "${SKIA_DIR}/include/gpu/ganesh"
+        "${SKIA_DIR}/include/gpu/ganesh/gl"
+        "${SKIA_DIR}/include/ports"
+    )
+    target_link_libraries(dictscribe PRIVATE
+        dictscribe_protocol
+        glfw
+        "${SKIA_OUT_DIR}/libskia.a"
+        Fontconfig::Fontconfig
+        Freetype::Freetype
+        OpenGL::GL
+        X11::X11
+        Threads::Threads
+        ${CMAKE_DL_LIBS}
+    )
+endif()

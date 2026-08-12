@@ -1,0 +1,12 @@
+build/
+dist/
+.cache/
+.idea/
+.vscode/
+*.log
+*.db
+*.user
+*.swp
+*.pyc
+__pycache__/
+compile_commands.json

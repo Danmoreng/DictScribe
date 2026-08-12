@@ -1,0 +1,34 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 26,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "core-debug",
+      "displayName": "DictScribe core (Debug)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/core",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "core-debug",
+      "configurePreset": "core-debug"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "core-debug",
+      "configurePreset": "core-debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}
