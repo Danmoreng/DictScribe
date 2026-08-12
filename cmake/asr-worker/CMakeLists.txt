@@ -46,6 +46,23 @@ target_compile_definitions(dictscribe-asr-worker PRIVATE
     DICTSCRIBE_RUNTIME_VERSION="${PROJECT_VERSION}"
 )
 
+if(WIN32)
+    get_filename_component(
+        NEMO_SPEECH_PREFIX "${NeMoSpeech_DIR}/../../.." ABSOLUTE)
+    file(GLOB NEMO_SPEECH_RUNTIME_DLLS
+        "${NEMO_SPEECH_PREFIX}/bin/*.dll")
+    if(NOT NEMO_SPEECH_RUNTIME_DLLS)
+        message(FATAL_ERROR "No NeMo Speech runtime DLLs found in ${NEMO_SPEECH_PREFIX}/bin")
+    endif()
+    add_custom_command(TARGET dictscribe-asr-worker POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${NEMO_SPEECH_RUNTIME_DLLS}
+            $<TARGET_FILE_DIR:dictscribe-asr-worker>
+        COMMAND_EXPAND_LISTS
+    )
+    install(FILES ${NEMO_SPEECH_RUNTIME_DLLS} DESTINATION bin)
+endif()
+
 if(APPLE)
     set_target_properties(dictscribe-asr-worker PROPERTIES
         BUILD_RPATH "@loader_path/../lib"

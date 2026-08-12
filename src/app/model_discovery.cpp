@@ -55,6 +55,11 @@ std::filesystem::path HuggingFaceHubCache() {
     if (const auto home = EnvironmentPath("HOME"); !home.empty()) {
         return home / ".cache/huggingface/hub";
     }
+#ifdef _WIN32
+    if (const auto profile = EnvironmentPath("USERPROFILE"); !profile.empty()) {
+        return profile / ".cache/huggingface/hub";
+    }
+#endif
     return {};
 }
 
@@ -115,8 +120,13 @@ bool IsFile(const std::filesystem::path& path) {
 DiscoveryResult DiscoverConfig(int argc, char** argv) {
     const std::filesystem::path project_root = DICTSCRIBE_PROJECT_ROOT;
     DiscoveryResult result;
+#ifdef _WIN32
+    result.config.asr_worker = project_root / "build/asr-worker/dictscribe-asr-worker.exe";
+    result.config.rewrite_worker = project_root / "build/rewrite-worker/bin/dictscribe-rewrite-worker.exe";
+#else
     result.config.asr_worker = project_root / "build/asr-worker/dictscribe-asr-worker";
     result.config.rewrite_worker = project_root / "build/rewrite-worker/bin/dictscribe-rewrite-worker";
+#endif
     result.config.asr_model = FindAsrModel();
     result.config.rewrite_model = FindRewriteModel();
     if (const char* language = std::getenv("DICTSCRIBE_LANGUAGE"); language && language[0] != '\0') {
@@ -193,8 +203,8 @@ DiscoveryResult DiscoverConfig(int argc, char** argv) {
             if (index > 0) message << ", ";
             message << missing[index];
         }
-        message << ". Run ./scripts/build.sh and place the models in the Hugging Face cache"
-                   " (HF_HUB_CACHE, HF_HOME/hub, or ~/.cache/huggingface/hub)."
+        message << ". Build DictScribe and place the models in the Hugging Face cache"
+                   " (HF_HUB_CACHE, HF_HOME/hub, or the standard user cache)."
                    " Explicit --asr-model/--rewrite-model overrides remain available for development.";
         result.error = message.str();
     }

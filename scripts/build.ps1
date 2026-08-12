@@ -1,7 +1,12 @@
 param(
     [switch]$Clean,
     [switch]$Cuda,
-    [string]$VcpkgRoot = $env:VCPKG_ROOT
+    [switch]$SkipUi,
+    [ValidateRange(1, 64)]
+    [int]$Jobs = [Math]::Min([Environment]::ProcessorCount, 8),
+    [string]$VcpkgRoot = $env:VCPKG_ROOT,
+    [string]$SkiaDir = $env:DICTSCRIBE_SKIA_DIR,
+    [string]$SkiaOutDir = $env:DICTSCRIBE_SKIA_OUT_DIR
 )
 
 $ErrorActionPreference = "Stop"
@@ -9,6 +14,37 @@ $ProjectRoot = Split-Path -Parent $PSScriptRoot
 $BuildRoot = Join-Path $ProjectRoot "build"
 $NemoBuild = Join-Path $BuildRoot "nemo-sdk"
 $NemoInstall = Join-Path $BuildRoot "nemo-install"
+
+function Assert-NativeSuccess([string]$Action) {
+    if ($LASTEXITCODE -ne 0) {
+        throw "$Action failed with exit code $LASTEXITCODE."
+    }
+}
+
+$vsInstall = $null
+$vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+if (Test-Path $vswhere) {
+    $vsInstall = & $vswhere -latest -products * `
+        -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+        -property installationPath
+}
+
+if (-not (Get-Command cl -ErrorAction SilentlyContinue) -and $vsInstall) {
+    $devCommand = Join-Path $vsInstall "Common7\Tools\VsDevCmd.bat"
+    $environmentCommand = '"' + $devCommand + '" -no_logo -arch=amd64 && set'
+    & $env:ComSpec /d /s /c $environmentCommand | ForEach-Object {
+        if ($_ -match '^([^=]+)=(.*)$') {
+            Set-Item -Path "Env:$($Matches[1])" -Value $Matches[2]
+        }
+    }
+}
+
+if ([string]::IsNullOrWhiteSpace($VcpkgRoot) -and $vsInstall) {
+    $bundledVcpkg = Join-Path $vsInstall "VC\vcpkg"
+    if (Test-Path (Join-Path $bundledVcpkg "scripts\buildsystems\vcpkg.cmake")) {
+        $VcpkgRoot = $bundledVcpkg
+    }
+}
 
 if ($Clean -and (Test-Path $BuildRoot)) {
     Remove-Item -Recurse -Force $BuildRoot
@@ -32,9 +68,31 @@ if (Get-Command ninja -ErrorAction SilentlyContinue) {
     $generator = @("-G", "Ninja")
 }
 
+$coreArgs = @("-DCMAKE_BUILD_TYPE=Debug")
+if ($SkipUi) {
+    $coreArgs += "-DDICTSCRIBE_BUILD_UI=OFF"
+} else {
+    if ([string]::IsNullOrWhiteSpace($SkiaDir)) {
+        $SkiaDir = Join-Path (Split-Path -Parent $ProjectRoot) `
+            "simple-markdown-viewer\third_party\skia"
+    }
+    if ([string]::IsNullOrWhiteSpace($SkiaOutDir)) {
+        $SkiaOutDir = Join-Path $SkiaDir "out\Static"
+    }
+    if (-not (Test-Path (Join-Path $SkiaDir "include\core\SkCanvas.h")) -or
+        -not (Test-Path (Join-Path $SkiaOutDir "skia.lib"))) {
+        throw "A built Windows Skia checkout is required for the desktop UI. Set DICTSCRIBE_SKIA_DIR and DICTSCRIBE_SKIA_OUT_DIR, run the neighboring simple-markdown-viewer build, or pass -SkipUi."
+    }
+    $coreArgs += "-DDICTSCRIBE_BUILD_UI=ON"
+    $coreArgs += "-DSKIA_DIR=$SkiaDir"
+    $coreArgs += "-DSKIA_OUT_DIR=$SkiaOutDir"
+}
+
 cmake -S $ProjectRoot -B (Join-Path $BuildRoot "core") @generator `
-    -DCMAKE_BUILD_TYPE=Debug
-cmake --build (Join-Path $BuildRoot "core") --parallel
+    @coreArgs
+Assert-NativeSuccess "Core configuration"
+cmake --build (Join-Path $BuildRoot "core") --parallel $Jobs
+Assert-NativeSuccess "Core build"
 
 $nemoArgs = @(
     "-DCMAKE_BUILD_TYPE=Release",
@@ -62,11 +120,13 @@ if (-not [string]::IsNullOrWhiteSpace($VcpkgRoot)) {
     }
     $nemoArgs += "-DCMAKE_TOOLCHAIN_FILE=$toolchain"
     $nemoArgs += "-DVCPKG_TARGET_TRIPLET=x64-windows-static-md"
+    $nemoArgs += "-DVCPKG_MANIFEST_DIR=$ProjectRoot"
 }
 
 if ($Cuda) {
     $bash = Get-Command bash -ErrorAction Stop
     & $bash.Source (Join-Path $ProjectRoot "third_party\NeMo-Speech.cpp\scripts\apply-ggml-patches.sh")
+    Assert-NativeSuccess "NeMo GGML patch application"
     $nemoArgs += "-DGGML_CUDA=ON", "-DNEMO_SPEECH_GGML_PATCHED=ON"
 } else {
     $nemoArgs += "-DGGML_CUDA=OFF", "-DNEMO_SPEECH_GGML_PATCHED=OFF"
@@ -74,20 +134,27 @@ if ($Cuda) {
 
 cmake -S (Join-Path $ProjectRoot "third_party\NeMo-Speech.cpp") -B $NemoBuild `
     @generator @nemoArgs
-cmake --build $NemoBuild --config Release --target nemo_speech_asr_c --parallel
+Assert-NativeSuccess "NeMo SDK configuration"
+cmake --build $NemoBuild --config Release --target nemo_speech_asr_c --parallel $Jobs
+Assert-NativeSuccess "NeMo SDK build"
 cmake --install $NemoBuild --config Release
+Assert-NativeSuccess "NeMo SDK install"
 
 cmake -S (Join-Path $ProjectRoot "cmake\asr-worker") `
     -B (Join-Path $BuildRoot "asr-worker") @generator `
     -DCMAKE_BUILD_TYPE=Release `
     "-DCMAKE_PREFIX_PATH=$NemoInstall"
-cmake --build (Join-Path $BuildRoot "asr-worker") --config Release --parallel
+Assert-NativeSuccess "ASR worker configuration"
+cmake --build (Join-Path $BuildRoot "asr-worker") --config Release --parallel $Jobs
+Assert-NativeSuccess "ASR worker build"
 
 $cudaFlag = if ($Cuda) { "ON" } else { "OFF" }
 cmake -S (Join-Path $ProjectRoot "cmake\rewrite-worker") `
     -B (Join-Path $BuildRoot "rewrite-worker") @generator `
     -DCMAKE_BUILD_TYPE=Release `
     "-DDICTSCRIBE_ENABLE_CUDA=$cudaFlag"
-cmake --build (Join-Path $BuildRoot "rewrite-worker") --config Release --parallel
+Assert-NativeSuccess "Rewrite worker configuration"
+cmake --build (Join-Path $BuildRoot "rewrite-worker") --config Release --parallel $Jobs
+Assert-NativeSuccess "Rewrite worker build"
 
 Write-Host "DictScribe native bootstrap build completed."

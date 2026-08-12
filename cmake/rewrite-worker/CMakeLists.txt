@@ -29,6 +29,9 @@ option(DICTSCRIBE_ENABLE_CUDA "Enable CUDA for the rewrite worker" OFF)
 set(GGML_CUDA ${DICTSCRIBE_ENABLE_CUDA} CACHE BOOL "" FORCE)
 
 add_subdirectory("${DICTSCRIBE_ROOT}/third_party/llama.cpp" llama.cpp EXCLUDE_FROM_ALL)
+if(MSVC)
+    target_compile_options(llama PRIVATE /Zc:__cplusplus)
+endif()
 
 add_executable(dictscribe-rewrite-worker
     "${DICTSCRIBE_ROOT}/src/protocol/jsonl_protocol.cpp"
