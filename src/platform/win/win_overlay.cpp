@@ -29,18 +29,19 @@ namespace dictscribe::win {
 namespace {
 
 constexpr wchar_t kOverlayClass[] = L"DictScribeOverlayWindow";
+constexpr wchar_t kBackdropClass[] = L"DictScribeBackdropWindow";
 constexpr int kLogicalWidth = 720;
 constexpr int kMinimumLogicalHeight = 244;
 constexpr int kMaximumLogicalHeight = 460;
-constexpr float kCornerRadius = 16.0F;
+constexpr float kCornerRadius = 8.0F;
 constexpr float kHeaderHeight = 52.0F;
 constexpr float kFooterHeight = 54.0F;
 constexpr float kBodyTop = 75.0F;
 constexpr float kBodyLineHeight = 23.0F;
 
-constexpr SkColor kBackground = SkColorSetRGB(14, 17, 23);
-constexpr SkColor kSurface = SkColorSetRGB(20, 24, 32);
-constexpr SkColor kElevated = SkColorSetRGB(27, 32, 42);
+constexpr SkColor kBackground = SkColorSetARGB(132, 14, 17, 23);
+constexpr SkColor kSurface = SkColorSetARGB(168, 20, 24, 32);
+constexpr SkColor kElevated = SkColorSetARGB(218, 27, 32, 42);
 constexpr SkColor kBorder = SkColorSetRGB(61, 69, 84);
 constexpr SkColor kText = SkColorSetRGB(244, 246, 250);
 constexpr SkColor kMuted = SkColorSetRGB(158, 167, 184);
@@ -49,6 +50,54 @@ constexpr SkColor kAccent = SkColorSetRGB(139, 124, 255);
 constexpr SkColor kRecording = SkColorSetRGB(255, 83, 112);
 constexpr SkColor kSuccess = SkColorSetRGB(73, 214, 158);
 constexpr SkColor kWarning = SkColorSetRGB(255, 186, 85);
+
+enum class AccentState : int {
+    Disabled = 0,
+    BlurBehind = 3,
+    AcrylicBlurBehind = 4,
+};
+
+struct AccentPolicy {
+    AccentState state = AccentState::Disabled;
+    int flags = 0;
+    DWORD gradient_color = 0;
+    int animation_id = 0;
+};
+
+struct WindowCompositionAttributeData {
+    int attribute = 0;
+    void* data = nullptr;
+    SIZE_T size = 0;
+};
+
+using SetWindowCompositionAttributeFunction = BOOL(WINAPI*)(
+    HWND,
+    WindowCompositionAttributeData*);
+
+bool EnableAcrylicBackdrop(HWND window) {
+    HMODULE user32 = GetModuleHandleW(L"user32.dll");
+    if (!user32) return false;
+    const auto set_attribute = reinterpret_cast<SetWindowCompositionAttributeFunction>(
+        GetProcAddress(user32, "SetWindowCompositionAttribute"));
+    if (!set_attribute) return false;
+
+    constexpr int kAccentPolicyAttribute = 19;
+    AccentPolicy policy;
+    policy.state = AccentState::AcrylicBlurBehind;
+    policy.flags = 2;
+    policy.gradient_color = 0x6617110EU;
+    WindowCompositionAttributeData data{
+        kAccentPolicyAttribute,
+        &policy,
+        sizeof(policy),
+    };
+    if (set_attribute(window, &data)) return true;
+
+    policy.state = AccentState::BlurBehind;
+    policy.flags = 0;
+    policy.gradient_color = 0;
+    return set_attribute(window, &data) != FALSE;
+}
 
 SkPaint Fill(SkColor color) {
     SkPaint paint;
@@ -176,6 +225,7 @@ sk_sp<SkTypeface> FindTypeface(
 
 struct WinOverlay::Impl {
     HWND hwnd = nullptr;
+    HWND backdrop_hwnd = nullptr;
     UINT dpi = 96;
     sk_sp<SkSurface> surface;
     HDC surface_dc = nullptr;
@@ -276,6 +326,37 @@ struct WinOverlay::Impl {
         else if (option == 2) language_handler("en");
     }
 
+    static LRESULT CALLBACK BackdropWindowProc(
+        HWND window,
+        UINT message,
+        WPARAM w_param,
+        LPARAM l_param) {
+        switch (message) {
+        case WM_NCHITTEST:
+            return HTTRANSPARENT;
+        case WM_MOUSEACTIVATE:
+            return MA_NOACTIVATE;
+        case WM_ERASEBKGND:
+            return 1;
+        default:
+            return DefWindowProcW(window, message, w_param, l_param);
+        }
+    }
+
+    void sync_backdrop(bool show) {
+        if (!hwnd || !backdrop_hwnd) return;
+        RECT rect{};
+        if (!GetWindowRect(hwnd, &rect)) return;
+        SetWindowPos(
+            backdrop_hwnd,
+            hwnd,
+            rect.left,
+            rect.top,
+            rect.right - rect.left,
+            rect.bottom - rect.top,
+            SWP_NOACTIVATE | (show ? SWP_SHOWWINDOW : 0));
+    }
+
     void resize_to_content() {
         if (!hwnd || !IsWindowVisible(hwnd)) return;
         RECT rect{};
@@ -307,6 +388,7 @@ struct WinOverlay::Impl {
             width,
             new_height,
             SWP_NOACTIVATE | SWP_NOZORDER);
+        sync_backdrop(true);
         if (preferred_position &&
             (preferred_position->x != x || preferred_position->y != y)) {
             preferred_position = POINT{x, y};
@@ -526,6 +608,19 @@ struct WinOverlay::Impl {
             self->release_surface();
             return 0;
         }
+        case WM_WINDOWPOSCHANGED: {
+            const auto* position = reinterpret_cast<const WINDOWPOS*>(l_param);
+            const LRESULT result = DefWindowProcW(hwnd, message, w_param, l_param);
+            if ((position->flags & (SWP_NOMOVE | SWP_NOSIZE)) !=
+                (SWP_NOMOVE | SWP_NOSIZE)) {
+                self->sync_backdrop(IsWindowVisible(hwnd) != FALSE);
+            }
+            return result;
+        }
+        case WM_SHOWWINDOW:
+            if (w_param) self->sync_backdrop(true);
+            else if (self->backdrop_hwnd) ShowWindow(self->backdrop_hwnd, SW_HIDE);
+            return DefWindowProcW(hwnd, message, w_param, l_param);
         case WM_DESTROY:
             self->release_surface();
             return 0;
@@ -883,6 +978,7 @@ WinOverlay::WinOverlay() : impl_(std::make_unique<Impl>()) {}
 
 WinOverlay::~WinOverlay() {
     if (impl_->hwnd) DestroyWindow(impl_->hwnd);
+    if (impl_->backdrop_hwnd) DestroyWindow(impl_->backdrop_hwnd);
 }
 
 bool WinOverlay::create(HINSTANCE instance, std::string& error) {
@@ -894,6 +990,35 @@ bool WinOverlay::create(HINSTANCE instance, std::string& error) {
     window_class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     if (!RegisterClassExW(&window_class) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
         error = "Could not register the DictScribe overlay window.";
+        return false;
+    }
+
+    WNDCLASSEXW backdrop_class{};
+    backdrop_class.cbSize = sizeof(backdrop_class);
+    backdrop_class.hInstance = instance;
+    backdrop_class.lpfnWndProc = Impl::BackdropWindowProc;
+    backdrop_class.lpszClassName = kBackdropClass;
+    backdrop_class.hbrBackground = static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
+    if (!RegisterClassExW(&backdrop_class) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+        error = "Could not register the DictScribe glass backdrop window.";
+        return false;
+    }
+
+    impl_->backdrop_hwnd = CreateWindowExW(
+        WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT,
+        kBackdropClass,
+        L"DictScribe glass backdrop",
+        WS_POPUP,
+        0,
+        0,
+        kLogicalWidth,
+        kMinimumLogicalHeight,
+        nullptr,
+        nullptr,
+        instance,
+        nullptr);
+    if (!impl_->backdrop_hwnd) {
+        error = "Could not create the DictScribe glass backdrop window.";
         return false;
     }
 
@@ -919,6 +1044,11 @@ bool WinOverlay::create(HINSTANCE instance, std::string& error) {
     const int disable_dwm_rounding = 1;
     DwmSetWindowAttribute(
         impl_->hwnd, 33, &disable_dwm_rounding, sizeof(disable_dwm_rounding));
+    DwmSetWindowAttribute(impl_->backdrop_hwnd, 20, &dark, sizeof(dark));
+    const int rounded_backdrop = 2;
+    DwmSetWindowAttribute(
+        impl_->backdrop_hwnd, 33, &rounded_backdrop, sizeof(rounded_backdrop));
+    EnableAcrylicBackdrop(impl_->backdrop_hwnd);
 
     impl_->font_manager = SkFontMgr_New_DirectWrite();
     if (!impl_->font_manager) impl_->font_manager = SkFontMgr_New_GDI();
@@ -1018,11 +1148,13 @@ void WinOverlay::show_near(const TargetContext& target) {
         width,
         height,
         SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    impl_->sync_backdrop(true);
     InvalidateRect(impl_->hwnd, nullptr, FALSE);
 }
 
 void WinOverlay::hide() {
     ShowWindow(impl_->hwnd, SW_HIDE);
+    if (impl_->backdrop_hwnd) ShowWindow(impl_->backdrop_hwnd, SW_HIDE);
 }
 
 HWND WinOverlay::window() const { return impl_->hwnd; }

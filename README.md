@@ -127,8 +127,9 @@ the existing clipboard untouched. If Windows blocks safe focus restoration or
 no external target exists, the completed text is copied to the clipboard and a
 notification explains that it can be inserted with `Ctrl+V`.
 
-The overlay is visually opaque. Its header can be dragged without activating
-the window. After the user moves it, DictScribe stores that screen position and
+The overlay uses a subtle Windows acrylic backdrop with a dark translucent Skia
+surface. Systems without backdrop support retain the same dark opaque fallback.
+Its header can be dragged without activating the window. After the user moves it, DictScribe stores that screen position and
 reuses it for later dictations and application launches. The position is clamped
 back onto a visible monitor when the display layout changes. Foreground tracking
 changes only the eventual insertion target. The compact transcript type allows the window to grow with its content
