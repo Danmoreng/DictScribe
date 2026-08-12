@@ -88,14 +88,26 @@ Qwen3.5's chat template is explicitly continued with its non-thinking assistant
 prefix: reasoning traces are both unnecessary and far too expensive for live
 cleanup. Greedy decoding was replaced with Qwen's recommended non-thinking
 sampling configuration: temperature 0.7, top-p 0.8, top-k 20, and presence
-penalty 1.5. The rewrite instruction is deliberately short and uses positive
-directions only; spoken formatting commands remain an observed behavior rather
-than an explicit instruction until the next manual test. As a runtime safety
-bound, CPU inference uses at most eight threads and
+penalty 1.5. Sampling uses a fixed seed so identical cleanup requests are
+reproducible. Before inference, deterministic normalization resolves explicit
+correction markers, spoken paragraph and line breaks, colons, numbered list
+items, and dictated path symbols. Technical literals are replaced with opaque
+placeholders for inference and restored afterwards; the model may omit a
+superseded literal but cannot silently rewrite or duplicate it. As a runtime
+safety bound, CPU inference uses at most eight threads and
 each complete rewrite request has a 15-second deadline. Any reasoning prefix is
 stripped (or rejected when incomplete) before a result can reach the UI.
 Rewrite quality and self-correction fidelity are not considered selected or
 production-ready until the planned model benchmark is complete.
+
+The first recorded-speech benchmark uses three German PCM16 mono recordings:
+fillers and self-correction, spoken list formatting, and technical identifiers
+and paths. The app-equivalent 1,600-sample streaming path produced useful prose
+for the first two recordings but lost or phonetically damaged several technical
+tokens in the third. Cleanup now resolves the explicit correction and formats
+the list reproducibly without inventing replacement path segments. It cannot
+recover information absent from the ASR result; damaged names such as a
+misrecognized project name remain visible rather than being guessed.
 
 Microphone activation was intentionally not performed during the automated
 bootstrap verification because it records from the user's default input

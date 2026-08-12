@@ -70,6 +70,11 @@ Result:
 The worker uses a constrained built-in cleanup instruction. Product code must
 not treat dictated text as instructions to the model.
 
+Explicit spoken corrections and formatting commands are normalized before
+inference. Technical literals are protected during generation and restored
+unchanged so the model cannot fabricate a plausible replacement identifier or
+path.
+
 `language` is the source and required output language. If a generated result
 clearly changes that language, the worker retries with a stricter constraint
 and rejects a second mismatch instead of returning a translation.

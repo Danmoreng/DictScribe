@@ -32,9 +32,11 @@ add_subdirectory("${DICTSCRIBE_ROOT}/third_party/llama.cpp" llama.cpp EXCLUDE_FR
 
 add_executable(dictscribe-rewrite-worker
     "${DICTSCRIBE_ROOT}/src/protocol/jsonl_protocol.cpp"
+    "${DICTSCRIBE_ROOT}/src/workers/rewrite/dictation_normalizer.cpp"
     "${DICTSCRIBE_ROOT}/src/workers/rewrite/language_guard.cpp"
     "${DICTSCRIBE_ROOT}/src/workers/rewrite/llama_rewriter.cpp"
     "${DICTSCRIBE_ROOT}/src/workers/rewrite/main.cpp"
+    "${DICTSCRIBE_ROOT}/src/workers/rewrite/technical_literals.cpp"
 )
 target_include_directories(dictscribe-rewrite-worker PRIVATE
     "${DICTSCRIBE_ROOT}/include"

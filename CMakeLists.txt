@@ -34,6 +34,20 @@ add_executable(dictscribe-language-guard-tests
 target_include_directories(dictscribe-language-guard-tests PRIVATE src)
 add_test(NAME dictscribe_language_guard COMMAND dictscribe-language-guard-tests)
 
+add_executable(dictscribe-dictation-normalizer-tests
+    tests/dictation_normalizer_test.cpp
+    src/workers/rewrite/dictation_normalizer.cpp
+)
+target_include_directories(dictscribe-dictation-normalizer-tests PRIVATE src)
+add_test(NAME dictscribe_dictation_normalizer COMMAND dictscribe-dictation-normalizer-tests)
+
+add_executable(dictscribe-technical-literal-tests
+    tests/technical_literals_test.cpp
+    src/workers/rewrite/technical_literals.cpp
+)
+target_include_directories(dictscribe-technical-literal-tests PRIVATE src)
+add_test(NAME dictscribe_technical_literals COMMAND dictscribe-technical-literal-tests)
+
 find_package(Threads REQUIRED)
 
 add_executable(dictscribe-fake-asr-worker tests/fake_asr_worker.cpp)
