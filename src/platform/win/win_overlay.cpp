@@ -18,8 +18,8 @@
 #include "include/core/SkFontMgr.h"
 #include "include/core/SkImageInfo.h"
 #include "include/core/SkPaint.h"
-#include "include/core/SkPixmap.h"
 #include "include/core/SkRect.h"
+#include "include/core/SkRRect.h"
 #include "include/core/SkSurface.h"
 #include "include/ports/SkTypeface_win.h"
 #pragma warning(pop)
@@ -182,6 +182,9 @@ struct WinOverlay::Impl {
     HWND hwnd = nullptr;
     UINT dpi = 96;
     sk_sp<SkSurface> surface;
+    HDC surface_dc = nullptr;
+    HBITMAP surface_bitmap = nullptr;
+    HGDIOBJ previous_surface_bitmap = nullptr;
     sk_sp<SkFontMgr> font_manager;
     sk_sp<SkTypeface> regular;
     sk_sp<SkTypeface> semibold;
@@ -275,17 +278,6 @@ struct WinOverlay::Impl {
         else if (option == 2) language_handler("en");
     }
 
-    void apply_window_region(int width, int height) const {
-        HRGN region = CreateRoundRectRgn(
-            0,
-            0,
-            width + 1,
-            height + 1,
-            MulDiv(static_cast<int>(kCornerRadius * 2.0F), static_cast<int>(dpi), 96),
-            MulDiv(static_cast<int>(kCornerRadius * 2.0F), static_cast<int>(dpi), 96));
-        SetWindowRgn(hwnd, region, FALSE);
-    }
-
     void resize_to_content() {
         if (!hwnd || !IsWindowVisible(hwnd)) return;
         RECT rect{};
@@ -303,8 +295,7 @@ struct WinOverlay::Impl {
             y,
             static_cast<int>(info.rcWork.top) + 8,
             static_cast<int>(info.rcWork.bottom) - new_height - 8);
-        apply_window_region(width, new_height);
-        surface.reset();
+        release_surface();
         SetWindowPos(
             hwnd,
             nullptr,
@@ -313,6 +304,18 @@ struct WinOverlay::Impl {
             width,
             new_height,
             SWP_NOACTIVATE | SWP_NOZORDER);
+    }
+
+    void release_surface() {
+        surface.reset();
+        if (surface_dc && previous_surface_bitmap) {
+            SelectObject(surface_dc, previous_surface_bitmap);
+        }
+        if (surface_bitmap) DeleteObject(surface_bitmap);
+        if (surface_dc) DeleteDC(surface_dc);
+        surface_dc = nullptr;
+        surface_bitmap = nullptr;
+        previous_surface_bitmap = nullptr;
     }
 
     void scroll_by(int lines) {
@@ -502,14 +505,11 @@ struct WinOverlay::Impl {
                 suggested->right - suggested->left,
                 suggested->bottom - suggested->top,
                 SWP_NOACTIVATE);
-            self->apply_window_region(
-                suggested->right - suggested->left,
-                suggested->bottom - suggested->top);
-            self->surface.reset();
+            self->release_surface();
             return 0;
         }
         case WM_DESTROY:
-            self->surface.reset();
+            self->release_surface();
             return 0;
         default:
             return DefWindowProcW(hwnd, message, w_param, l_param);
@@ -523,36 +523,70 @@ struct WinOverlay::Impl {
         const int height = rect.bottom - rect.top;
         if (width <= 0 || height <= 0) return false;
         if (surface && surface->width() == width && surface->height() == height) return true;
-        surface = SkSurfaces::Raster(SkImageInfo::MakeN32Premul(width, height));
-        return surface != nullptr;
-    }
+        release_surface();
 
-    void present() {
-        SkPixmap pixmap;
-        if (!surface || !surface->peekPixels(&pixmap)) return;
-        PAINTSTRUCT paint{};
-        HDC dc = BeginPaint(hwnd, &paint);
         BITMAPINFO bitmap{};
         bitmap.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-        bitmap.bmiHeader.biWidth = pixmap.width();
-        bitmap.bmiHeader.biHeight = -pixmap.height();
+        bitmap.bmiHeader.biWidth = width;
+        bitmap.bmiHeader.biHeight = -height;
         bitmap.bmiHeader.biPlanes = 1;
         bitmap.bmiHeader.biBitCount = 32;
         bitmap.bmiHeader.biCompression = BI_RGB;
-        StretchDIBits(
-            dc,
-            0,
-            0,
-            pixmap.width(),
-            pixmap.height(),
-            0,
-            0,
-            pixmap.width(),
-            pixmap.height(),
-            pixmap.addr(),
+
+        HDC screen_dc = GetDC(nullptr);
+        surface_dc = CreateCompatibleDC(screen_dc);
+        void* pixels = nullptr;
+        surface_bitmap = CreateDIBSection(
+            screen_dc,
             &bitmap,
             DIB_RGB_COLORS,
-            SRCCOPY);
+            &pixels,
+            nullptr,
+            0);
+        ReleaseDC(nullptr, screen_dc);
+        if (!surface_dc || !surface_bitmap || !pixels) {
+            release_surface();
+            return false;
+        }
+
+        previous_surface_bitmap = SelectObject(surface_dc, surface_bitmap);
+        surface = SkSurfaces::WrapPixels(
+            SkImageInfo::MakeN32Premul(width, height),
+            pixels,
+            static_cast<std::size_t>(width) * 4U);
+        if (!surface) {
+            release_surface();
+            return false;
+        }
+        return true;
+    }
+
+    void present() {
+        if (!surface || !surface_dc) return;
+        PAINTSTRUCT paint{};
+        BeginPaint(hwnd, &paint);
+
+        RECT window{};
+        GetWindowRect(hwnd, &window);
+        POINT destination{window.left, window.top};
+        POINT source{0, 0};
+        SIZE size{surface->width(), surface->height()};
+        BLENDFUNCTION blend{};
+        blend.BlendOp = AC_SRC_OVER;
+        blend.SourceConstantAlpha = 255;
+        blend.AlphaFormat = AC_SRC_ALPHA;
+        HDC screen_dc = GetDC(nullptr);
+        UpdateLayeredWindow(
+            hwnd,
+            screen_dc,
+            &destination,
+            &size,
+            surface_dc,
+            &source,
+            0,
+            &blend,
+            ULW_ALPHA);
+        ReleaseDC(nullptr, screen_dc);
         EndPaint(hwnd, &paint);
     }
 
@@ -565,12 +599,18 @@ struct WinOverlay::Impl {
         }
         SkCanvas* canvas = surface->getCanvas();
         const float scale = static_cast<float>(dpi) / 96.0F;
-        canvas->clear(kBackground);
+        canvas->clear(SK_ColorTRANSPARENT);
         canvas->save();
         canvas->scale(scale, scale);
 
         const float width = static_cast<float>(surface->width()) / scale;
         const float height = static_cast<float>(surface->height()) / scale;
+        canvas->clipRRect(
+            SkRRect::MakeRectXY(
+                SkRect::MakeWH(width, height),
+                kCornerRadius,
+                kCornerRadius),
+            true);
         const SkFont status_font(semibold, 13.0F);
         const SkFont body_font(regular, 16.5F);
         const SkFont badge_font(semibold, 11.5F);
@@ -857,7 +897,6 @@ bool WinOverlay::create(HINSTANCE instance, std::string& error) {
         error = "Could not create the DictScribe overlay window.";
         return false;
     }
-    SetLayeredWindowAttributes(impl_->hwnd, 0, 255, LWA_ALPHA);
     const BOOL dark = TRUE;
     DwmSetWindowAttribute(impl_->hwnd, 20, &dark, sizeof(dark));
     const int disable_dwm_rounding = 1;
@@ -931,8 +970,7 @@ void WinOverlay::show_near(const TargetContext& target) {
     y = std::clamp(y, static_cast<int>(info.rcWork.top) + 8,
                    static_cast<int>(info.rcWork.bottom) - height - 8);
 
-    impl_->apply_window_region(width, height);
-    impl_->surface.reset();
+    impl_->release_surface();
     SetWindowPos(
         impl_->hwnd,
         HWND_TOPMOST,
