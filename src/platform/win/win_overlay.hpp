@@ -26,6 +26,7 @@ public:
 
     bool create(HINSTANCE instance, std::string& error);
     void set_language_handler(std::function<void(std::string)> handler);
+    void set_settings_handler(std::function<void()> handler);
     void set_position_handler(std::function<void(POINT)> handler);
     void set_preferred_position(std::optional<POINT> position);
     void update(const app::AppSnapshot& snapshot, std::string notice = {});

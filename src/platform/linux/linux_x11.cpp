@@ -85,6 +85,7 @@ void X11Desktop::shutdown() {
     root_window_ = None;
     control_window_ = None;
     overlay_window_ = None;
+    settings_window_ = None;
     clipboard_text_.clear();
 }
 
@@ -205,11 +206,13 @@ TargetContext X11Desktop::capture_target() const {
     target.active_window = active_window();
     int revert = RevertToNone;
     XGetInputFocus(display_, &target.focus_window, &revert);
-    if (target.active_window == overlay_window_ || target.active_window == control_window_ ||
+    if (target.active_window == overlay_window_ || target.active_window == settings_window_ ||
+        target.active_window == control_window_ ||
         target.active_window == root_window_) {
         target.active_window = None;
     }
-    if (target.focus_window == overlay_window_ || target.focus_window == control_window_ ||
+    if (target.focus_window == overlay_window_ || target.focus_window == settings_window_ ||
+        target.focus_window == control_window_ ||
         target.focus_window == root_window_ || target.focus_window == PointerRoot) {
         target.focus_window = None;
     }

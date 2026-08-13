@@ -1,7 +1,9 @@
 #include "ui/dictation_window.hpp"
 
 #include "app/app_controller.hpp"
+#include "app/settings.hpp"
 #include "platform/linux/linux_x11.hpp"
+#include "ui/settings_view.hpp"
 #include "ui/skia_surface.hpp"
 #include "ui/text_layout.hpp"
 
@@ -55,11 +57,17 @@ constexpr SkColor kWarning = SkColorSetRGB(255, 186, 85);
 struct WindowState {
     app::AppController* controller = nullptr;
     GLFWwindow* window = nullptr;
+    GLFWwindow* settings_window = nullptr;
+    app::AppSettings* settings = nullptr;
     linux_x11::X11Desktop desktop;
     linux_x11::TargetContext target;
     app::AppSnapshot snapshot;
     std::array<float, 16> level_history{};
     SkRect language_badge = SkRect::MakeEmpty();
+    SkRect settings_button = SkRect::MakeEmpty();
+    SettingsViewLayout settings_layout;
+    SettingsViewModel settings_model;
+    app::PendingDeviceSettings pending_devices;
     SkRect language_menu = SkRect::MakeEmpty();
     bool language_menu_open = false;
     bool session_active = false;
@@ -268,27 +276,82 @@ SkRect LanguageOptionRect(const app::AppSnapshot& snapshot, int option) {
 }
 
 void SelectLanguage(WindowState& state, int option) {
-    if (option == 0) state.controller->set_language("auto");
-    else if (option == 1) state.controller->set_language("de");
-    else if (option == 2) state.controller->set_language("en");
+    const char* language = option == 1 ? "de" : (option == 2 ? "en" : "auto");
+    state.controller->set_language(language);
+    state.settings->language = state.controller->snapshot().language;
+    std::string error;
+    if (!app::SaveSettings(*state.settings, error)) {
+        state.settings_model.notice = std::move(error);
+    } else {
+        state.settings_model.notice.clear();
+    }
+}
+
+void ShowSettings(WindowState& state) {
+    if (!state.settings_window) return;
+    glfwShowWindow(state.settings_window);
+    glfwFocusWindow(state.settings_window);
+}
+
+void ApplySettingsAction(WindowState& state, SettingsAction action) {
+    if (action == SettingsAction::Close) {
+        glfwHideWindow(state.settings_window);
+        return;
+    }
+    if (action == SettingsAction::LanguageAuto ||
+        action == SettingsAction::LanguageGerman ||
+        action == SettingsAction::LanguageEnglish) {
+        SelectLanguage(
+            state,
+            action == SettingsAction::LanguageGerman ? 1 :
+                (action == SettingsAction::LanguageEnglish ? 2 : 0));
+        return;
+    }
+
+    bool changed = false;
+    if (action == SettingsAction::AsrCpu || action == SettingsAction::AsrGpu) {
+        const bool gpu = action == SettingsAction::AsrGpu;
+        changed = state.controller->set_asr_device(gpu);
+        if (changed) {
+            state.pending_devices.asr_device = gpu
+                ? app::ComputeDevice::Gpu : app::ComputeDevice::Cpu;
+        }
+    } else if (action == SettingsAction::RewriteCpu || action == SettingsAction::RewriteGpu) {
+        const bool gpu = action == SettingsAction::RewriteGpu;
+        changed = state.controller->set_rewrite_device(gpu);
+        if (changed) {
+            state.pending_devices.rewrite_device = gpu
+                ? app::ComputeDevice::Gpu : app::ComputeDevice::Cpu;
+        }
+    }
 }
 
 void ShowNearTarget(WindowState& state, const sk_sp<SkTypeface>& regular) {
     const int height = DesiredHeight(state.controller->snapshot(), regular);
-    int x = state.target.anchor_x - kLogicalWidth / 2;
-    int y = state.target.anchor_y - height - 20;
+    int x = state.settings->overlay_position
+        ? state.settings->overlay_position->x
+        : state.target.anchor_x - kLogicalWidth / 2;
+    int y = state.settings->overlay_position
+        ? state.settings->overlay_position->y
+        : state.target.anchor_y - height - 20;
 
     int monitor_count = 0;
     GLFWmonitor** monitors = glfwGetMonitors(&monitor_count);
     GLFWmonitor* chosen = glfwGetPrimaryMonitor();
+    const int placement_anchor_x = state.settings->overlay_position
+        ? x + kLogicalWidth / 2
+        : state.target.anchor_x;
+    const int placement_anchor_y = state.settings->overlay_position
+        ? y + height / 2
+        : state.target.anchor_y;
     for (int index = 0; index < monitor_count; ++index) {
         int mx = 0;
         int my = 0;
         int mw = 0;
         int mh = 0;
         glfwGetMonitorWorkarea(monitors[index], &mx, &my, &mw, &mh);
-        if (state.target.anchor_x >= mx && state.target.anchor_x < mx + mw &&
-            state.target.anchor_y >= my && state.target.anchor_y < my + mh) {
+        if (placement_anchor_x >= mx && placement_anchor_x < mx + mw &&
+            placement_anchor_y >= my && placement_anchor_y < my + mh) {
             chosen = monitors[index];
             break;
         }
@@ -299,7 +362,7 @@ void ShowNearTarget(WindowState& state, const sk_sp<SkTypeface>& regular) {
     int mw = kLogicalWidth;
     int mh = height;
     if (chosen) glfwGetMonitorWorkarea(chosen, &mx, &my, &mw, &mh);
-    if (y < my + 8) y = state.target.anchor_y + 20;
+    if (!state.settings->overlay_position && y < my + 8) y = state.target.anchor_y + 20;
     x = std::clamp(x, mx + 8, std::max(mx + 8, mx + mw - kLogicalWidth - 8));
     y = std::clamp(y, my + 8, std::max(my + 8, my + mh - height - 8));
 
@@ -430,6 +493,11 @@ void Render(
         canvas->drawLine(chevron_x - 3.0F, 24.0F, chevron_x, 27.0F, chevron);
         canvas->drawLine(chevron_x, 27.0F, chevron_x + 3.0F, 24.0F, chevron);
     }
+
+    state.settings_button = SkRect::MakeXYWH(410.0F, 11.0F, 88.0F, 30.0F);
+    canvas->drawRoundRect(state.settings_button, 7.0F, 7.0F, Fill(kElevated));
+    canvas->drawRoundRect(state.settings_button, 7.0F, 7.0F, border);
+    DrawText(*canvas, "Settings", 426.0F, 30.5F, hint_font, kMuted);
 
     const float meter_start_x = logical_width - 132.0F;
     for (std::size_t index = 0; index < state.level_history.size(); ++index) {
@@ -587,6 +655,11 @@ void MouseButtonCallback(GLFWwindow* window, int button, int action, int) {
     glfwGetCursorPos(window, &x, &y);
 
     if (action == GLFW_PRESS) {
+        if (state->settings_button.contains(static_cast<float>(x), static_cast<float>(y))) {
+            state->language_menu_open = false;
+            ShowSettings(*state);
+            return;
+        }
         if (state->language_badge.contains(static_cast<float>(x), static_cast<float>(y))) {
             state->language_menu_open = !state->language_menu_open;
             return;
@@ -610,8 +683,69 @@ void MouseButtonCallback(GLFWwindow* window, int button, int action, int) {
             }
         }
     } else if (action == GLFW_RELEASE) {
+        if (state->dragging) {
+            int window_x = 0;
+            int window_y = 0;
+            glfwGetWindowPos(window, &window_x, &window_y);
+            state->settings->overlay_position = app::ScreenPosition{window_x, window_y};
+            std::string error;
+            if (!app::SaveSettings(*state->settings, error)) {
+                state->settings_model.notice = std::move(error);
+            } else {
+                state->settings_model.notice.clear();
+            }
+        }
         state->dragging = false;
     }
+}
+
+void SettingsMouseButtonCallback(GLFWwindow* window, int button, int action, int) {
+    if (button != GLFW_MOUSE_BUTTON_LEFT || action != GLFW_RELEASE) return;
+    auto* state = static_cast<WindowState*>(glfwGetWindowUserPointer(window));
+    if (!state) return;
+    double x = 0.0;
+    double y = 0.0;
+    glfwGetCursorPos(window, &x, &y);
+    ApplySettingsAction(
+        *state,
+        HitTestSettingsView(
+            state->settings_layout,
+            static_cast<float>(x),
+            static_cast<float>(y),
+            state->settings_model.device_controls_enabled));
+}
+
+void SettingsCloseCallback(GLFWwindow* window) {
+    glfwSetWindowShouldClose(window, GLFW_FALSE);
+    glfwHideWindow(window);
+}
+
+void RenderSettings(
+    SkiaSurface& surface,
+    WindowState& state,
+    const sk_sp<SkTypeface>& regular,
+    const sk_sp<SkTypeface>& semibold) {
+    if (!surface.ensure_size(state.settings_window) || !surface.surface()) return;
+    int width = 0;
+    int height = 0;
+    int framebuffer_width = 0;
+    int framebuffer_height = 0;
+    glfwGetWindowSize(state.settings_window, &width, &height);
+    glfwGetFramebufferSize(state.settings_window, &framebuffer_width, &framebuffer_height);
+    SkCanvas* canvas = surface.surface()->getCanvas();
+    canvas->save();
+    canvas->scale(
+        static_cast<float>(framebuffer_width) / std::max(width, 1),
+        static_cast<float>(framebuffer_height) / std::max(height, 1));
+    state.settings_layout = RenderSettingsView(
+        *canvas,
+        static_cast<float>(width),
+        static_cast<float>(height),
+        SkFont(regular, 13.0F),
+        SkFont(semibold, 13.0F),
+        state.settings_model);
+    canvas->restore();
+    surface.present(state.settings_window);
 }
 
 void CursorPositionCallback(GLFWwindow* window, double, double) {
@@ -637,7 +771,9 @@ void ScrollCallback(GLFWwindow* window, double, double y_offset) {
 
 } // namespace
 
-int RunDictationWindow(app::AppController& controller) {
+int RunDictationWindow(
+    app::AppController& controller,
+    app::AppSettings& settings) {
     glfwSetErrorCallback([](int, const char* description) {
         std::cerr << "GLFW: " << description << '\n';
     });
@@ -666,8 +802,29 @@ int RunDictationWindow(app::AppController& controller) {
     }
     ConfigureOverlayWindow(window);
 
+    glfwWindowHint(GLFW_DECORATED, GLFW_TRUE);
+    glfwWindowHint(GLFW_FLOATING, GLFW_FALSE);
+    glfwWindowHint(GLFW_FOCUS_ON_SHOW, GLFW_TRUE);
+    glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER, GLFW_FALSE);
+    GLFWwindow* settings_window = glfwCreateWindow(
+        640, 600, "DictScribe Settings", nullptr, window);
+    if (!settings_window) {
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return 1;
+    }
+
     SkiaSurface surface;
     if (!surface.initialize(window)) {
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return 1;
+    }
+    glfwSwapInterval(1);
+    SkiaSurface settings_surface;
+    if (!settings_surface.initialize(settings_window)) {
+        surface.shutdown();
+        glfwDestroyWindow(settings_window);
         glfwDestroyWindow(window);
         glfwTerminate();
         return 1;
@@ -680,6 +837,8 @@ int RunDictationWindow(app::AppController& controller) {
     if (!regular || !semibold) {
         std::cerr << "Could not initialize a system typeface.\n";
         surface.shutdown();
+        settings_surface.shutdown();
+        glfwDestroyWindow(settings_window);
         glfwDestroyWindow(window);
         glfwTerminate();
         return 1;
@@ -688,20 +847,31 @@ int RunDictationWindow(app::AppController& controller) {
     WindowState state;
     state.controller = &controller;
     state.window = window;
+    state.settings_window = settings_window;
+    state.settings = &settings;
     state.snapshot = controller.snapshot();
     std::string desktop_error;
     if (!state.desktop.initialize(glfwGetX11Window(window), desktop_error)) {
         std::cerr << desktop_error << '\n';
         surface.shutdown();
+        settings_surface.shutdown();
+        glfwDestroyWindow(settings_window);
         glfwDestroyWindow(window);
         glfwTerminate();
         return 1;
+    }
+    state.desktop.set_settings_window(glfwGetX11Window(settings_window));
+    if (settings.overlay_position) {
+        glfwSetWindowPos(window, settings.overlay_position->x, settings.overlay_position->y);
     }
 
     glfwSetWindowUserPointer(window, &state);
     glfwSetMouseButtonCallback(window, MouseButtonCallback);
     glfwSetCursorPosCallback(window, CursorPositionCallback);
     glfwSetScrollCallback(window, ScrollCallback);
+    glfwSetWindowUserPointer(settings_window, &state);
+    glfwSetMouseButtonCallback(settings_window, SettingsMouseButtonCallback);
+    glfwSetWindowCloseCallback(settings_window, SettingsCloseCallback);
     std::cerr << "DictScribe is ready in the background. Ctrl+Alt+Space toggles dictation; "
                  "Ctrl+Alt+Q quits.\n";
 
@@ -731,6 +901,25 @@ int RunDictationWindow(app::AppController& controller) {
         }
         controller.tick();
         state.snapshot = controller.snapshot();
+        if (app::ReconcilePendingDeviceSettings(
+                state.snapshot,
+                state.pending_devices,
+                settings,
+                state.settings_model.notice)) {
+            std::string error;
+            if (!app::SaveSettings(settings, error)) {
+                state.settings_model.notice = std::move(error);
+            }
+        }
+        state.settings_model.settings = settings;
+        state.settings_model.settings.language = state.snapshot.language;
+        state.settings_model.settings.asr_device = state.snapshot.asr_use_gpu
+            ? app::ComputeDevice::Gpu : app::ComputeDevice::Cpu;
+        state.settings_model.settings.rewrite_device = state.snapshot.rewrite_use_gpu
+            ? app::ComputeDevice::Gpu : app::ComputeDevice::Cpu;
+        state.settings_model.asr_model_name = state.snapshot.asr_model_name;
+        state.settings_model.rewrite_model_name = state.snapshot.rewrite_model_name;
+        state.settings_model.device_controls_enabled = app::CanSetComputeDevice(state.snapshot);
         UpdateLevelHistory(state);
 
         if (state.session_active && state.snapshot.mode == app::DictationMode::Complete) {
@@ -749,6 +938,7 @@ int RunDictationWindow(app::AppController& controller) {
         } else if (state.session_active && state.snapshot.mode == app::DictationMode::Error) {
             state.session_active = false;
             state.desktop.set_session_hotkeys(false);
+            HideOverlay(state);
         }
 
         if (glfwGetWindowAttrib(window, GLFW_VISIBLE)) {
@@ -759,11 +949,16 @@ int RunDictationWindow(app::AppController& controller) {
             }
             Render(surface, state, regular, semibold);
         }
+        if (glfwGetWindowAttrib(settings_window, GLFW_VISIBLE)) {
+            RenderSettings(settings_surface, state, regular, semibold);
+        }
         glfwWaitEventsTimeout(1.0 / 60.0);
     }
 
     state.desktop.shutdown();
     surface.shutdown();
+    settings_surface.shutdown();
+    glfwDestroyWindow(settings_window);
     glfwDestroyWindow(window);
     glfwTerminate();
     return 0;

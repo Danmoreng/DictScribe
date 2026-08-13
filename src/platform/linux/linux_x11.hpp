@@ -34,6 +34,7 @@ public:
     X11Desktop& operator=(const X11Desktop&) = delete;
 
     bool initialize(Window overlay_window, std::string& error);
+    void set_settings_window(Window settings_window) { settings_window_ = settings_window; }
     void shutdown();
 
     [[nodiscard]] std::vector<DesktopCommand> poll_commands();
@@ -52,6 +53,7 @@ private:
     Window root_window_ = None;
     Window control_window_ = None;
     Window overlay_window_ = None;
+    Window settings_window_ = None;
     Atom clipboard_atom_ = None;
     Atom targets_atom_ = None;
     Atom utf8_atom_ = None;

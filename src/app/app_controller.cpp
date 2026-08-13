@@ -43,13 +43,30 @@ AppController::~AppController() {
 bool AppController::start(const AppConfig& config) {
     {
         std::lock_guard lock(mutex_);
+        config_ = config;
         state_ = {};
         state_.asr_model_name = FileName(config.asr_model);
         state_.rewrite_model_name = FileName(config.rewrite_model);
         state_.language = config.language;
+        state_.asr_use_gpu = config.asr_use_gpu;
+        state_.rewrite_use_gpu = config.rewrite_use_gpu;
     }
 
     std::string error;
+    if (!start_asr_worker(config, error)) {
+        std::lock_guard lock(mutex_);
+        set_error_locked(std::move(error));
+        return false;
+    }
+    if (!start_rewrite_worker(config, error)) {
+        std::lock_guard lock(mutex_);
+        set_error_locked(std::move(error));
+        return false;
+    }
+    return true;
+}
+
+bool AppController::start_asr_worker(const AppConfig& config, std::string& error) {
     std::vector<std::string> asr_arguments = {
         "--stdio",
         "--model",
@@ -57,7 +74,7 @@ bool AppController::start(const AppConfig& config) {
         "--protocol-version",
         "1",
     };
-    if (config.use_gpu) {
+    if (config.asr_use_gpu) {
         asr_arguments.push_back("--gpu");
     }
     if (!asr_.start(
@@ -65,11 +82,12 @@ bool AppController::start(const AppConfig& config) {
             asr_arguments,
             [this](const nlohmann::json& message) { handle_asr_message(message); },
             error)) {
-        std::lock_guard lock(mutex_);
-        set_error_locked(std::move(error));
         return false;
     }
+    return true;
+}
 
+bool AppController::start_rewrite_worker(const AppConfig& config, std::string& error) {
     std::vector<std::string> rewrite_arguments = {
         "--stdio",
         "--model",
@@ -77,7 +95,7 @@ bool AppController::start(const AppConfig& config) {
         "--protocol-version",
         "1",
     };
-    if (config.use_gpu) {
+    if (config.rewrite_use_gpu) {
         rewrite_arguments.insert(
             rewrite_arguments.end(), {"--gpu-layers", "99"});
     }
@@ -86,8 +104,6 @@ bool AppController::start(const AppConfig& config) {
             rewrite_arguments,
             [this](const nlohmann::json& message) { handle_rewrite_message(message); },
             error)) {
-        std::lock_guard lock(mutex_);
-        set_error_locked(std::move(error));
         return false;
     }
     return true;
@@ -227,6 +243,76 @@ void AppController::set_language(std::string language) {
     if (state_.mode == DictationMode::Ready || state_.mode == DictationMode::Complete) {
         state_.status = "Language changed - ready for dictation";
     }
+}
+
+bool AppController::set_asr_device(bool use_gpu) {
+    AppConfig config;
+    {
+        std::lock_guard lock(mutex_);
+        if (!CanSetComputeDevice(state_)) return false;
+        if (config_.asr_use_gpu == use_gpu) return true;
+        config_.asr_use_gpu = use_gpu;
+        config = config_;
+        state_.asr_use_gpu = use_gpu;
+        state_.asr_ready = false;
+        state_.mode = DictationMode::Starting;
+        state_.error.clear();
+        state_.status = use_gpu
+            ? "Restarting speech recognition on GPU..."
+            : "Restarting speech recognition on CPU...";
+    }
+
+    std::string ignored;
+    if (asr_.running()) {
+        asr_.send({{"v", 1}, {"type", "shutdown"}, {"id", "ui-restart-asr"}}, ignored);
+    }
+    asr_.stop();
+
+    std::string error;
+    if (!start_asr_worker(config, error)) {
+        std::lock_guard lock(mutex_);
+        set_error_locked(std::move(error));
+        return false;
+    }
+    return true;
+}
+
+bool AppController::set_rewrite_device(bool use_gpu) {
+    AppConfig config;
+    {
+        std::lock_guard lock(mutex_);
+        if (!CanSetComputeDevice(state_)) return false;
+        if (config_.rewrite_use_gpu == use_gpu) return true;
+        config_.rewrite_use_gpu = use_gpu;
+        config = config_;
+        state_.rewrite_use_gpu = use_gpu;
+        state_.rewrite_ready = false;
+        state_.rewrite_in_progress = false;
+        rewrite_in_flight_ = false;
+        active_rewrite_id_.clear();
+        active_rewrite_session_id_.clear();
+        finalization_waiting_ = false;
+        pending_live_cleanup_ = false;
+        state_.mode = DictationMode::Starting;
+        state_.error.clear();
+        state_.status = use_gpu
+            ? "Restarting AI cleanup on GPU..."
+            : "Restarting AI cleanup on CPU...";
+    }
+
+    std::string ignored;
+    if (rewrite_.running()) {
+        rewrite_.send({{"v", 1}, {"type", "shutdown"}, {"id", "ui-restart-rewrite"}}, ignored);
+    }
+    rewrite_.stop();
+
+    std::string error;
+    if (!start_rewrite_worker(config, error)) {
+        std::lock_guard lock(mutex_);
+        set_error_locked(std::move(error));
+        return false;
+    }
+    return true;
 }
 
 void AppController::tick() {
@@ -494,6 +580,13 @@ bool CanSetLanguage(const AppSnapshot& snapshot) {
         snapshot.mode == DictationMode::StartingRecording ||
         snapshot.mode == DictationMode::Recording ||
         snapshot.mode == DictationMode::Finalizing ||
+        snapshot.mode == DictationMode::Complete ||
+        snapshot.mode == DictationMode::Error;
+}
+
+bool CanSetComputeDevice(const AppSnapshot& snapshot) {
+    return snapshot.mode == DictationMode::Starting ||
+        snapshot.mode == DictationMode::Ready ||
         snapshot.mode == DictationMode::Complete ||
         snapshot.mode == DictationMode::Error;
 }

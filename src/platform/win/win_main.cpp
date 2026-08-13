@@ -8,8 +8,9 @@
 
 #include "app/app_controller.hpp"
 #include "app/model_discovery.hpp"
+#include "app/settings.hpp"
 #include "platform/win/win_overlay.hpp"
-#include "platform/win/win_settings.hpp"
+#include "platform/win/win_settings_window.hpp"
 #include "platform/win/win_text_injector.hpp"
 
 #include <array>
@@ -30,6 +31,7 @@ constexpr int kToggleHotkey = 1;
 constexpr int kAcceptHotkey = 2;
 constexpr int kCancelHotkey = 3;
 constexpr UINT kCommandToggle = 100;
+constexpr UINT kCommandSettings = 101;
 constexpr UINT kCommandLanguageAuto = 110;
 constexpr UINT kCommandLanguageGerman = 111;
 constexpr UINT kCommandLanguageEnglish = 112;
@@ -92,10 +94,8 @@ public:
     bool initialize(HINSTANCE instance, app::DiscoveryResult discovery) {
         instance_ = instance;
         smoke_test_ = discovery.smoke_test;
-        settings_ = LoadSettings();
-        if (!discovery.language_overridden) {
-            discovery.config.language = settings_.language;
-        }
+        settings_ = app::LoadSettings();
+        app::ApplyStoredSettings(discovery, settings_);
         std::string error;
         if (!overlay_.create(instance, error)) {
             MessageBoxA(nullptr, error.c_str(), "DictScribe", MB_ICONERROR | MB_OK);
@@ -103,8 +103,9 @@ public:
         }
         overlay_.set_language_handler(
             [this](std::string language) { select_language(std::move(language)); });
+        overlay_.set_settings_handler([this]() { show_settings(); });
         overlay_.set_position_handler([this](POINT position) {
-            settings_.overlay_position = OverlayPosition{position.x, position.y};
+            settings_.overlay_position = app::ScreenPosition{position.x, position.y};
             persist_settings();
         });
         if (settings_.overlay_position) {
@@ -113,6 +114,12 @@ public:
                 settings_.overlay_position->y,
             });
         }
+        if (!settings_window_.create(instance, error)) {
+            MessageBoxA(nullptr, error.c_str(), "DictScribe", MB_ICONERROR | MB_OK);
+            return false;
+        }
+        settings_window_.set_action_handler(
+            [this](ui::SettingsAction action) { apply_settings_action(action); });
 
         WNDCLASSEXW window_class{};
         window_class.cbSize = sizeof(window_class);
@@ -263,7 +270,12 @@ private:
         if (session_active_) refresh_target_context();
         controller_.tick();
         const app::AppSnapshot snapshot = controller_.snapshot();
+        if (app::ReconcilePendingDeviceSettings(
+                snapshot, pending_devices_, settings_, settings_notice_)) {
+            persist_settings();
+        }
         overlay_.update(snapshot, notice_);
+        settings_window_.update(settings_view_model(snapshot));
 
         if (smoke_test_ &&
             (snapshot.mode == app::DictationMode::Ready ||
@@ -283,6 +295,7 @@ private:
         } else if (session_active_ && snapshot.mode == app::DictationMode::Error) {
             session_active_ = false;
             unregister_session_hotkeys();
+            overlay_.hide();
         }
     }
 
@@ -373,6 +386,8 @@ private:
         HMENU menu = CreatePopupMenu();
         AppendMenuW(menu, MF_STRING, kCommandToggle, ToggleMenuLabel(snapshot.mode));
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+        AppendMenuW(menu, MF_STRING, kCommandSettings, L"Settings...");
+        AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(
             menu,
             MF_STRING | (snapshot.language == "auto" ? MF_CHECKED : 0),
@@ -403,6 +418,9 @@ private:
         case kCommandToggle:
             toggle_dictation();
             break;
+        case kCommandSettings:
+            show_settings();
+            break;
         case kCommandLanguageAuto:
             select_language("auto");
             break;
@@ -428,10 +446,68 @@ private:
         persist_settings();
     }
 
-    void persist_settings() const {
+    ui::SettingsViewModel settings_view_model(const app::AppSnapshot& snapshot) const {
+        ui::SettingsViewModel model;
+        model.settings = settings_;
+        model.settings.language = snapshot.language;
+        model.settings.asr_device = snapshot.asr_use_gpu
+            ? app::ComputeDevice::Gpu : app::ComputeDevice::Cpu;
+        model.settings.rewrite_device = snapshot.rewrite_use_gpu
+            ? app::ComputeDevice::Gpu : app::ComputeDevice::Cpu;
+        model.asr_model_name = snapshot.asr_model_name;
+        model.rewrite_model_name = snapshot.rewrite_model_name;
+        model.device_controls_enabled = app::CanSetComputeDevice(snapshot);
+        model.notice = settings_notice_;
+        return model;
+    }
+
+    void show_settings() {
+        settings_window_.update(settings_view_model(controller_.snapshot()));
+        settings_window_.show();
+    }
+
+    void apply_settings_action(ui::SettingsAction action) {
+        if (action == ui::SettingsAction::LanguageAuto) {
+            select_language("auto");
+            return;
+        }
+        if (action == ui::SettingsAction::LanguageGerman) {
+            select_language("de");
+            return;
+        }
+        if (action == ui::SettingsAction::LanguageEnglish) {
+            select_language("en");
+            return;
+        }
+
+        bool changed = false;
+        if (action == ui::SettingsAction::AsrCpu || action == ui::SettingsAction::AsrGpu) {
+            const bool gpu = action == ui::SettingsAction::AsrGpu;
+            changed = controller_.set_asr_device(gpu);
+            if (changed) {
+                pending_devices_.asr_device = gpu
+                    ? app::ComputeDevice::Gpu : app::ComputeDevice::Cpu;
+            }
+        } else if (
+            action == ui::SettingsAction::RewriteCpu ||
+            action == ui::SettingsAction::RewriteGpu) {
+            const bool gpu = action == ui::SettingsAction::RewriteGpu;
+            changed = controller_.set_rewrite_device(gpu);
+            if (changed) {
+                pending_devices_.rewrite_device = gpu
+                    ? app::ComputeDevice::Gpu : app::ComputeDevice::Cpu;
+            }
+        }
+        settings_window_.update(settings_view_model(controller_.snapshot()));
+    }
+
+    void persist_settings() {
         std::string error;
-        if (!SaveSettings(settings_, error)) {
+        if (!app::SaveSettings(settings_, error)) {
+            settings_notice_ = error;
             OutputDebugStringA(("DictScribe settings: " + error + "\n").c_str());
+        } else {
+            settings_notice_.clear();
         }
     }
 
@@ -445,9 +521,12 @@ private:
     app::DictationMode previous_mode_ = app::DictationMode::Starting;
     TargetContext target_;
     std::string notice_;
-    WinSettings settings_;
+    std::string settings_notice_;
+    app::AppSettings settings_;
+    app::PendingDeviceSettings pending_devices_;
     app::AppController controller_;
     WinOverlay overlay_;
+    WinSettingsWindow settings_window_;
 };
 
 } // namespace dictscribe::win

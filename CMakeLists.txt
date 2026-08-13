@@ -55,6 +55,16 @@ add_executable(dictscribe-text-layout-tests
 target_include_directories(dictscribe-text-layout-tests PRIVATE src)
 add_test(NAME dictscribe_text_layout COMMAND dictscribe-text-layout-tests)
 
+add_executable(dictscribe-app-settings-tests
+    tests/app_settings_test.cpp
+    src/app/settings.cpp
+)
+target_include_directories(dictscribe-app-settings-tests PRIVATE
+    src
+    third_party/nlohmann-json/single_include
+)
+add_test(NAME dictscribe_app_settings COMMAND dictscribe-app-settings-tests)
+
 find_package(Threads REQUIRED)
 
 add_executable(dictscribe-fake-asr-worker tests/fake_asr_worker.cpp)
@@ -80,20 +90,6 @@ target_compile_definitions(dictscribe-app-controller-tests PRIVATE
 add_test(NAME dictscribe_app_controller COMMAND dictscribe-app-controller-tests)
 
 if(WIN32)
-    add_executable(dictscribe-win-settings-tests
-        tests/win_settings_test.cpp
-        src/platform/win/win_settings.cpp
-    )
-    target_include_directories(dictscribe-win-settings-tests PRIVATE
-        src
-        third_party/nlohmann-json/single_include
-    )
-    target_compile_definitions(dictscribe-win-settings-tests PRIVATE UNICODE _UNICODE)
-    if(MSVC)
-        target_compile_options(dictscribe-win-settings-tests PRIVATE /utf-8)
-    endif()
-    add_test(NAME dictscribe_win_settings COMMAND dictscribe-win-settings-tests)
-
     add_executable(dictscribe-win-text-injector-tests
         tests/win_text_injector_test.cpp
         src/platform/win/win_text_injector.cpp
@@ -120,11 +116,13 @@ if(DICTSCRIBE_BUILD_UI)
         add_executable(dictscribe WIN32
             src/platform/win/win_main.cpp
             src/platform/win/win_overlay.cpp
-            src/platform/win/win_settings.cpp
+            src/platform/win/win_settings_window.cpp
             src/platform/win/win_text_injector.cpp
+            src/ui/settings_view.cpp
             src/protocol/jsonl_protocol.cpp
             src/app/app_controller.cpp
             src/app/model_discovery.cpp
+            src/app/settings.cpp
             src/app/worker_process.cpp
         )
     elseif(UNIX AND NOT APPLE)
@@ -159,10 +157,12 @@ if(DICTSCRIBE_BUILD_UI)
             src/platform/linux/linux_x11.cpp
             src/ui/dictation_window.cpp
             src/ui/skia_surface.cpp
+            src/ui/settings_view.cpp
             src/ui/text_layout.cpp
             src/protocol/jsonl_protocol.cpp
             src/app/app_controller.cpp
             src/app/model_discovery.cpp
+            src/app/settings.cpp
             src/app/worker_process.cpp
         )
     else()

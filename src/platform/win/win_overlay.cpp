@@ -237,6 +237,7 @@ struct WinOverlay::Impl {
     app::AppSnapshot snapshot;
     std::string notice;
     std::function<void(std::string)> language_handler;
+    std::function<void()> settings_handler;
     std::function<void(POINT)> position_handler;
     std::optional<POINT> preferred_position;
     std::array<float, 16> level_history{};
@@ -246,6 +247,7 @@ struct WinOverlay::Impl {
     bool user_scrolled = false;
     bool dragging_scrollbar = false;
     bool language_pressed = false;
+    bool settings_pressed = false;
     bool language_menu_open = false;
     int pressed_language_option = -1;
     int hovered_language_option = -1;
@@ -283,6 +285,17 @@ struct WinOverlay::Impl {
         const float scale = static_cast<float>(dpi) / 96.0F;
         const float width = static_cast<float>(client.right - client.left) / scale;
         return language_badge_rect(width).contains(
+            static_cast<float>(client_x) / scale,
+            static_cast<float>(client_y) / scale);
+    }
+
+    SkRect settings_button_rect() const {
+        return SkRect::MakeXYWH(410.0F, 11.0F, 88.0F, 30.0F);
+    }
+
+    bool settings_button_contains(int client_x, int client_y) const {
+        const float scale = static_cast<float>(dpi) / 96.0F;
+        return settings_button_rect().contains(
             static_cast<float>(client_x) / scale,
             static_cast<float>(client_y) / scale);
     }
@@ -453,6 +466,7 @@ struct WinOverlay::Impl {
             ScreenToClient(hwnd, &point);
             if (self->language_menu_open) return HTCLIENT;
             if (self->language_badge_contains(point.x, point.y)) return HTCLIENT;
+            if (self->settings_button_contains(point.x, point.y)) return HTCLIENT;
             const int header_height = MulDiv(
                 static_cast<int>(kHeaderHeight), static_cast<int>(self->dpi), 96);
             return point.y >= 0 && point.y < header_height ? HTCAPTION : HTCLIENT;
@@ -469,6 +483,12 @@ struct WinOverlay::Impl {
             return 0;
         }
         case WM_LBUTTONDOWN: {
+            if (self->settings_button_contains(GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param))) {
+                self->settings_pressed = true;
+                SetCapture(hwnd);
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
             if (self->language_badge_contains(GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param))) {
                 self->language_pressed = true;
                 SetCapture(hwnd);
@@ -530,6 +550,15 @@ struct WinOverlay::Impl {
             }
             return 0;
         case WM_LBUTTONUP:
+            if (self->settings_pressed) {
+                const bool activate = self->settings_button_contains(
+                    GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param));
+                self->settings_pressed = false;
+                ReleaseCapture();
+                if (activate && self->settings_handler) self->settings_handler();
+                InvalidateRect(hwnd, nullptr, FALSE);
+                return 0;
+            }
             if (self->language_pressed) {
                 const bool toggle_menu = self->language_badge_contains(
                     GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param));
@@ -564,6 +593,7 @@ struct WinOverlay::Impl {
         case WM_CAPTURECHANGED:
             self->dragging_scrollbar = false;
             self->language_pressed = false;
+            self->settings_pressed = false;
             self->pressed_language_option = -1;
             return 0;
         case WM_EXITSIZEMOVE: {
@@ -581,6 +611,10 @@ struct WinOverlay::Impl {
             GetCursorPos(&cursor);
             ScreenToClient(hwnd, &cursor);
             if (self->language_badge_contains(cursor.x, cursor.y)) {
+                SetCursor(LoadCursorW(nullptr, IDC_HAND));
+                return TRUE;
+            }
+            if (self->settings_button_contains(cursor.x, cursor.y)) {
                 SetCursor(LoadCursorW(nullptr, IDC_HAND));
                 return TRUE;
             }
@@ -780,6 +814,15 @@ struct WinOverlay::Impl {
             canvas->drawLine(chevron_x - 3.0F, 24.0F, chevron_x, 27.0F, chevron);
             canvas->drawLine(chevron_x, 27.0F, chevron_x + 3.0F, 24.0F, chevron);
         }
+
+        const SkRect settings_rect = settings_button_rect();
+        canvas->drawRoundRect(
+            settings_rect,
+            7.0F,
+            7.0F,
+            Fill(settings_pressed ? kBorder : kElevated));
+        canvas->drawRoundRect(settings_rect, 7.0F, 7.0F, badge_border);
+        DrawText(canvas[0], "Settings", 426.0F, 30.5F, hint_font, kMuted);
 
         const float meter_start_x = width - 132.0F;
         for (std::size_t index = 0; index < level_history.size(); ++index) {
@@ -1067,6 +1110,10 @@ bool WinOverlay::create(HINSTANCE instance, std::string& error) {
 
 void WinOverlay::set_language_handler(std::function<void(std::string)> handler) {
     impl_->language_handler = std::move(handler);
+}
+
+void WinOverlay::set_settings_handler(std::function<void()> handler) {
+    impl_->settings_handler = std::move(handler);
 }
 
 void WinOverlay::set_position_handler(std::function<void(POINT)> handler) {

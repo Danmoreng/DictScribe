@@ -1,5 +1,17 @@
 # Implementation notes
 
+## 2026-08-13: shared settings and independent worker devices
+
+Windows and Linux now render the same Skia settings surface from their native
+window hosts. Language and independent ASR/rewrite CPU or GPU choices use one
+versioned settings format. A device change is accepted only while dictation is
+idle and immediately restarts only the selected worker; the other inference
+process remains loaded. Failed worker startup remains a recoverable settings
+state, and a device choice is committed to disk only after the worker reports
+ready, preventing a failing GPU backend from becoming a persistent startup
+loop. The settings surface displays the discovered local
+model filenames but intentionally does not allow arbitrary model selection.
+
 ## 2026-08-13: Linux/X11 overlay
 
 The former large Linux test window is now a compact GLFW/Skia overlay matching

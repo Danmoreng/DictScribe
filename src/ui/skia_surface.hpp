@@ -16,6 +16,7 @@ public:
     [[nodiscard]] SkSurface* surface() const { return surface_.get(); }
 
 private:
+    GLFWwindow* window_ = nullptr;
     sk_sp<GrDirectContext> context_;
     sk_sp<SkSurface> surface_;
 };

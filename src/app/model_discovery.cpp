@@ -163,8 +163,29 @@ DiscoveryResult DiscoverConfig(int argc, char** argv) {
         } else if (argument == "--language") {
             if (!require_string(result.config.language)) break;
             result.language_overridden = true;
+        } else if (argument == "--asr-device") {
+            std::string value;
+            if (!require_string(value)) break;
+            if (value != "cpu" && value != "gpu") {
+                result.error = "Unsupported ASR device: " + value + " (expected cpu or gpu)";
+                break;
+            }
+            result.config.asr_use_gpu = value == "gpu";
+            result.asr_device_overridden = true;
+        } else if (argument == "--rewrite-device") {
+            std::string value;
+            if (!require_string(value)) break;
+            if (value != "cpu" && value != "gpu") {
+                result.error = "Unsupported rewrite device: " + value + " (expected cpu or gpu)";
+                break;
+            }
+            result.config.rewrite_use_gpu = value == "gpu";
+            result.rewrite_device_overridden = true;
         } else if (argument == "--gpu") {
-            result.config.use_gpu = true;
+            result.config.asr_use_gpu = true;
+            result.config.rewrite_use_gpu = true;
+            result.asr_device_overridden = true;
+            result.rewrite_device_overridden = true;
         } else if (argument == "--help" || argument == "-h") {
             result.show_help = true;
         } else if (argument == "--version") {
@@ -213,6 +234,16 @@ DiscoveryResult DiscoverConfig(int argc, char** argv) {
     return result;
 }
 
+void ApplyStoredSettings(DiscoveryResult& discovery, const AppSettings& settings) {
+    if (!discovery.language_overridden) discovery.config.language = settings.language;
+    if (!discovery.asr_device_overridden) {
+        discovery.config.asr_use_gpu = settings.asr_device == ComputeDevice::Gpu;
+    }
+    if (!discovery.rewrite_device_overridden) {
+        discovery.config.rewrite_use_gpu = settings.rewrite_device == ComputeDevice::Gpu;
+    }
+}
+
 const char* CommandLineHelp() {
     return
         "Usage: dictscribe [options]\n"
@@ -221,7 +252,9 @@ const char* CommandLineHelp() {
         "  --asr-worker PATH      Override the ASR worker binary\n"
         "  --rewrite-worker PATH  Override the rewrite worker binary\n"
         "  --language CODE        Initial language: auto, de, or en\n"
-        "  --gpu                  Use the CUDA-enabled worker builds\n"
+        "  --asr-device DEVICE    Speech device: cpu or gpu\n"
+        "  --rewrite-device DEVICE Cleanup device: cpu or gpu\n"
+        "  --gpu                  Use the GPU for both workers\n"
         "  --smoke-test           Load both workers without opening a window\n"
         "  --help                 Show this help\n";
 }

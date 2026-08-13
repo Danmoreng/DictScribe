@@ -14,6 +14,7 @@
 namespace dictscribe::ui {
 
 bool SkiaSurface::initialize(GLFWwindow* window) {
+    window_ = window;
     glfwMakeContextCurrent(window);
     auto interface = GrGLMakeNativeInterface();
     if (!interface) {
@@ -32,6 +33,7 @@ bool SkiaSurface::ensure_size(GLFWwindow* window) {
     if (!context_) {
         return false;
     }
+    glfwMakeContextCurrent(window);
     int width = 0;
     int height = 0;
     glfwGetFramebufferSize(window, &width, &height);
@@ -64,6 +66,7 @@ bool SkiaSurface::ensure_size(GLFWwindow* window) {
 }
 
 void SkiaSurface::present(GLFWwindow* window) {
+    glfwMakeContextCurrent(window);
     if (context_) {
         context_->flushAndSubmit();
     }
@@ -71,11 +74,13 @@ void SkiaSurface::present(GLFWwindow* window) {
 }
 
 void SkiaSurface::shutdown() {
+    if (window_) glfwMakeContextCurrent(window_);
     surface_.reset();
     if (context_) {
         context_->abandonContext();
         context_.reset();
     }
+    window_ = nullptr;
 }
 
 } // namespace dictscribe::ui

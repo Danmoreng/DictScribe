@@ -14,7 +14,26 @@ void emit(nlohmann::json message) {
 
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    bool gpu = false;
+    bool fail_gpu = false;
+    for (int index = 1; index < argc; ++index) {
+        const std::string argument = argv[index];
+        if (argument == "--gpu") {
+            gpu = true;
+        } else if (argument == "--model" && index + 1 < argc) {
+            fail_gpu = std::string(argv[++index]).find("fail-gpu") != std::string::npos;
+        }
+    }
+    if (gpu && fail_gpu) {
+        emit({
+            {"type", "error"},
+            {"code", "TEST_GPU_START_FAILED"},
+            {"message", "simulated ASR GPU startup failure"},
+            {"recoverable", false},
+        });
+        return 1;
+    }
     emit({{"type", "ready"}, {"engine", "fake-asr"}});
     std::string line;
     int session_number = 0;

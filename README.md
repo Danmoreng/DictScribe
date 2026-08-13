@@ -136,19 +136,27 @@ changes only the eventual insertion target. The compact transcript type allows t
 up to a bounded height. Longer text can be navigated with the mouse wheel or
 the draggable scrollbar without activating the overlay. During recording, the
 header shows the selected language and visualizes actual microphone RMS/peak
-samples. The language badge opens a menu. Changing it during dictation finalizes
+samples. The language badge opens a menu, and the Settings button opens the
+cross-platform settings window. Changing the language during dictation finalizes
 the current ASR segment, preserves its text, and immediately starts a new audio
 session with the selected language. The body shows one live ASR transcript while recording and one cleaned
 result after finalization, never simultaneous raw and rewritten copies. The
 footer presents the relevant `Enter`, `Escape`, and `Ctrl+Alt+Space` shortcuts.
 
-Right-click the tray icon to start or stop dictation, select `Auto`, `Deutsch`,
-or `English`, or quit DictScribe. The
+Right-click the tray icon to start or stop dictation, open Settings, select
+`Auto`, `Deutsch`, or `English`, or quit DictScribe. The
 default shortcut intentionally avoids PowerToys Run's `Alt+Space` binding.
 
-The selected language and overlay position are stored in
-`%LOCALAPPDATA%\DictScribe\settings.json`. Explicit `--language` and
-`DICTSCRIBE_LANGUAGE` values override the stored language for that process.
+Language, overlay position, and the independent CPU/GPU choice for the ASR and
+rewrite workers are stored in `%LOCALAPPDATA%\DictScribe\settings.json`.
+Changing a device immediately restarts only the affected local worker. Device
+controls are disabled during an active dictation so a recording cannot be
+discarded by a restart, but remain available after a worker failure for
+recovery. A new device is persisted only after that worker reports a successful
+startup; a failed GPU attempt therefore retains the previously working device
+for the next application launch. Explicit `--language`, `--asr-device`,
+`--rewrite-device`, and `--gpu` arguments override the corresponding stored
+value for that process.
 
 To verify model discovery and both worker startups without activating the
 microphone, run:
@@ -192,7 +200,11 @@ a compact, always-on-top overlay near the mouse pointer without taking keyboard
 focus from the active application. Press `Ctrl+Alt+Space` or `Enter` to finish
 and insert, or `Escape` to cancel. `Ctrl+Alt+Q` exits the background process.
 The overlay can be dragged, scrolled, and used to select `Auto`, `Deutsch`, or
-`English` while recording continues.
+`English` while recording continues. Its Settings button opens the same settings
+surface as Windows. ASR and rewrite can independently use CPU or GPU; changing
+one restarts only that worker. Settings are stored in
+`$XDG_CONFIG_HOME/dictscribe/settings.json`, or
+`~/.config/dictscribe/settings.json` when that variable is unset.
 
 The X11 host remembers the most recent external focus target during dictation.
 On completion it owns the X11 clipboard and sends a local `Ctrl+V` through the

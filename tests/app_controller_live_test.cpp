@@ -30,6 +30,9 @@ dictscribe::app::AppSnapshot wait_until(
 } // namespace
 
 int main() {
+    dictscribe::app::AppSnapshot starting_snapshot;
+    assert(dictscribe::app::CanSetComputeDevice(starting_snapshot));
+
     dictscribe::app::AppConfig config;
     config.asr_worker = DICTSCRIBE_FAKE_ASR_WORKER;
     config.rewrite_worker = DICTSCRIBE_FAKE_REWRITE_WORKER;
@@ -42,6 +45,37 @@ int main() {
     wait_until(controller, [](const auto& state) {
         return state.mode == dictscribe::app::DictationMode::Ready;
     });
+
+    assert(controller.set_asr_device(true));
+    const auto restarting_asr = controller.snapshot();
+    assert(restarting_asr.rewrite_ready);
+    const auto asr_gpu = wait_until(controller, [](const auto& state) {
+        return state.mode == dictscribe::app::DictationMode::Ready;
+    });
+    assert(asr_gpu.asr_use_gpu);
+    assert(!asr_gpu.rewrite_use_gpu);
+
+    assert(controller.set_asr_device(false));
+    const auto both_cpu_again = wait_until(controller, [](const auto& state) {
+        return state.mode == dictscribe::app::DictationMode::Ready;
+    });
+    assert(!both_cpu_again.asr_use_gpu);
+    assert(!both_cpu_again.rewrite_use_gpu);
+
+    assert(controller.set_rewrite_device(true));
+    const auto restarting_rewrite = controller.snapshot();
+    assert(restarting_rewrite.asr_ready);
+    const auto rewrite_gpu = wait_until(controller, [](const auto& state) {
+        return state.mode == dictscribe::app::DictationMode::Ready;
+    });
+    assert(!rewrite_gpu.asr_use_gpu);
+    assert(rewrite_gpu.rewrite_use_gpu);
+
+    assert(controller.set_asr_device(true));
+    const auto both_gpu = wait_until(controller, [](const auto& state) {
+        return state.mode == dictscribe::app::DictationMode::Ready;
+    });
+    assert(both_gpu.asr_use_gpu && both_gpu.rewrite_use_gpu);
 
     controller.toggle_recording();
     const auto live = wait_until(controller, [](const auto& state) {
@@ -91,6 +125,25 @@ int main() {
     });
     assert(switched_final.raw_final_text ==
         "Ich teste llama_rewriter.cpp weiter final 3 Ich teste llama_rewriter.cpp weiter final 4");
+
+    dictscribe::app::AppConfig recovery_config = config;
+    recovery_config.asr_model = "fail-gpu-asr.gguf";
+    dictscribe::app::AppController recovery_controller;
+    assert(recovery_controller.start(recovery_config));
+    wait_until(recovery_controller, [](const auto& state) {
+        return state.mode == dictscribe::app::DictationMode::Ready;
+    });
+    assert(recovery_controller.set_asr_device(true));
+    const auto gpu_failure = wait_until(recovery_controller, [](const auto& state) {
+        return state.mode == dictscribe::app::DictationMode::Error;
+    });
+    assert(dictscribe::app::CanSetComputeDevice(gpu_failure));
+    assert(recovery_controller.set_asr_device(false));
+    const auto recovered = wait_until(recovery_controller, [](const auto& state) {
+        return state.mode == dictscribe::app::DictationMode::Ready;
+    });
+    assert(!recovered.asr_use_gpu);
+    assert(recovered.asr_ready && recovered.rewrite_ready);
 
     std::cout << "Live cleanup controller tests passed\n";
     return 0;

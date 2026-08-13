@@ -1,5 +1,6 @@
 #include "app/app_controller.hpp"
 #include "app/model_discovery.hpp"
+#include "app/settings.hpp"
 #include "ui/dictation_window.hpp"
 
 #include <chrono>
@@ -20,6 +21,9 @@ int main(int argc, char** argv) {
         std::cout << "dictscribe " << DICTSCRIBE_RUNTIME_VERSION << '\n';
         return 0;
     }
+
+    auto settings = dictscribe::app::LoadSettings();
+    dictscribe::app::ApplyStoredSettings(discovery, settings);
 
     dictscribe::app::AppController controller;
     if (!discovery.error.empty()) {
@@ -49,5 +53,5 @@ int main(int argc, char** argv) {
         std::cerr << "Timed out while loading the DictScribe workers.\n";
         return 1;
     }
-    return dictscribe::ui::RunDictationWindow(controller);
+    return dictscribe::ui::RunDictationWindow(controller, settings);
 }

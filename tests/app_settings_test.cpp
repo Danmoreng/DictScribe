@@ -1,0 +1,77 @@
+#include "app/settings.hpp"
+#include "app/app_controller.hpp"
+
+#include <cassert>
+#include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+
+int main() {
+    const auto suffix = std::to_string(
+        std::chrono::steady_clock::now().time_since_epoch().count());
+    const std::filesystem::path path = std::filesystem::temp_directory_path() /
+        ("dictscribe-settings-test-" + suffix + ".json");
+    std::error_code ignored;
+    std::filesystem::remove(path, ignored);
+    std::filesystem::remove(path.string() + ".tmp", ignored);
+
+    dictscribe::app::AppSettings expected;
+    expected.language = "de";
+    expected.asr_device = dictscribe::app::ComputeDevice::Gpu;
+    expected.rewrite_device = dictscribe::app::ComputeDevice::Cpu;
+    expected.overlay_position = dictscribe::app::ScreenPosition{321, 654};
+    std::string error;
+    assert(dictscribe::app::SaveSettings(path, expected, error));
+
+    const auto loaded = dictscribe::app::LoadSettings(path);
+    assert(loaded.language == "de");
+    assert(loaded.asr_device == dictscribe::app::ComputeDevice::Gpu);
+    assert(loaded.rewrite_device == dictscribe::app::ComputeDevice::Cpu);
+    assert(loaded.overlay_position.has_value());
+    assert(loaded.overlay_position->x == 321);
+    assert(loaded.overlay_position->y == 654);
+
+    {
+        std::ofstream invalid(path, std::ios::binary | std::ios::trunc);
+        invalid << R"({"language":"unsupported","asrDevice":"other","rewriteDevice":4,"overlayPosition":{"x":"bad","y":2}})";
+    }
+    const auto defaults = dictscribe::app::LoadSettings(path);
+    assert(defaults.language == "auto");
+    assert(defaults.asr_device == dictscribe::app::ComputeDevice::Cpu);
+    assert(defaults.rewrite_device == dictscribe::app::ComputeDevice::Cpu);
+    assert(!defaults.overlay_position.has_value());
+
+    dictscribe::app::AppSettings reconciled;
+    dictscribe::app::PendingDeviceSettings pending;
+    pending.asr_device = dictscribe::app::ComputeDevice::Gpu;
+    dictscribe::app::AppSnapshot snapshot;
+    snapshot.asr_use_gpu = true;
+    snapshot.asr_ready = false;
+    snapshot.mode = dictscribe::app::DictationMode::Starting;
+    std::string notice;
+    assert(!dictscribe::app::ReconcilePendingDeviceSettings(
+        snapshot, pending, reconciled, notice));
+    assert(reconciled.asr_device == dictscribe::app::ComputeDevice::Cpu);
+    assert(pending.asr_device.has_value());
+
+    snapshot.mode = dictscribe::app::DictationMode::Error;
+    assert(!dictscribe::app::ReconcilePendingDeviceSettings(
+        snapshot, pending, reconciled, notice));
+    assert(reconciled.asr_device == dictscribe::app::ComputeDevice::Cpu);
+    assert(!pending.asr_device.has_value());
+    assert(!notice.empty());
+
+    pending.asr_device = dictscribe::app::ComputeDevice::Gpu;
+    snapshot.mode = dictscribe::app::DictationMode::Ready;
+    snapshot.asr_ready = true;
+    assert(dictscribe::app::ReconcilePendingDeviceSettings(
+        snapshot, pending, reconciled, notice));
+    assert(reconciled.asr_device == dictscribe::app::ComputeDevice::Gpu);
+    assert(!pending.asr_device.has_value());
+    assert(notice.empty());
+
+    std::filesystem::remove(path, ignored);
+    std::cout << "Application settings tests passed\n";
+    return 0;
+}

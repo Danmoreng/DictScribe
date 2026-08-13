@@ -16,7 +16,8 @@ struct AppConfig {
     std::filesystem::path asr_model;
     std::filesystem::path rewrite_model;
     std::string language = "auto";
-    bool use_gpu = false;
+    bool asr_use_gpu = false;
+    bool rewrite_use_gpu = false;
 };
 
 enum class DictationMode {
@@ -45,6 +46,8 @@ struct AppSnapshot {
     std::string asr_model_name;
     std::string rewrite_model_name;
     std::string language = "auto";
+    bool asr_use_gpu = false;
+    bool rewrite_use_gpu = false;
 };
 
 class AppController {
@@ -60,10 +63,14 @@ public:
     void toggle_recording();
     void cancel_recording();
     void set_language(std::string language);
+    bool set_asr_device(bool use_gpu);
+    bool set_rewrite_device(bool use_gpu);
     void tick();
     [[nodiscard]] AppSnapshot snapshot() const;
 
 private:
+    bool start_asr_worker(const AppConfig& config, std::string& error);
+    bool start_rewrite_worker(const AppConfig& config, std::string& error);
     bool start_recording_locked(bool clear_transcript);
     bool stop_for_language_change_locked();
     void handle_asr_message(const nlohmann::json& message);
@@ -79,6 +86,7 @@ private:
     AppSnapshot state_;
     WorkerProcess asr_;
     WorkerProcess rewrite_;
+    AppConfig config_;
     std::uint64_t request_sequence_ = 0;
     bool rewrite_in_flight_ = false;
     bool finalization_waiting_ = false;
@@ -96,6 +104,7 @@ private:
 [[nodiscard]] bool CanToggle(const AppSnapshot& snapshot);
 [[nodiscard]] bool CanCancel(const AppSnapshot& snapshot);
 [[nodiscard]] bool CanSetLanguage(const AppSnapshot& snapshot);
+[[nodiscard]] bool CanSetComputeDevice(const AppSnapshot& snapshot);
 [[nodiscard]] const char* PrimaryButtonLabel(const AppSnapshot& snapshot);
 [[nodiscard]] const char* LanguageLabel(const AppSnapshot& snapshot);
 
