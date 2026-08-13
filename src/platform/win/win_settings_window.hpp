@@ -30,6 +30,7 @@ public:
 
     [[nodiscard]] HWND window() const;
     [[nodiscard]] bool visible() const;
+    [[nodiscard]] bool language_menu_open() const;
 
 private:
     struct Impl;

@@ -1,5 +1,6 @@
 #include "app/settings.hpp"
 #include "app/app_controller.hpp"
+#include "app/language_catalog.hpp"
 
 #include <cassert>
 #include <chrono>
@@ -8,6 +9,11 @@
 #include <iostream>
 
 int main() {
+    assert(dictscribe::app::kLanguageOptions.size() == 33);
+    assert(dictscribe::app::CanonicalLanguageCode("DE_de") == "de-DE");
+    assert(dictscribe::app::CanonicalLanguageCode("pt-br") == "pt-BR");
+    assert(dictscribe::app::CanonicalLanguageCode("el-GR").empty());
+
     const auto suffix = std::to_string(
         std::chrono::steady_clock::now().time_since_epoch().count());
     const std::filesystem::path path = std::filesystem::temp_directory_path() /
@@ -17,7 +23,7 @@ int main() {
     std::filesystem::remove(path.string() + ".tmp", ignored);
 
     dictscribe::app::AppSettings expected;
-    expected.language = "de";
+    expected.language = "de-DE";
     expected.cleanup_mode = dictscribe::app::CleanupMode::Ai;
     expected.asr_device = dictscribe::app::ComputeDevice::Gpu;
     expected.rewrite_device = dictscribe::app::ComputeDevice::Cpu;
@@ -26,7 +32,7 @@ int main() {
     assert(dictscribe::app::SaveSettings(path, expected, error));
 
     const auto loaded = dictscribe::app::LoadSettings(path);
-    assert(loaded.language == "de");
+    assert(loaded.language == "de-DE");
     assert(loaded.cleanup_mode == dictscribe::app::CleanupMode::Ai);
     assert(loaded.asr_device == dictscribe::app::ComputeDevice::Gpu);
     assert(loaded.rewrite_device == dictscribe::app::ComputeDevice::Cpu);
@@ -44,6 +50,12 @@ int main() {
     assert(defaults.asr_device == dictscribe::app::ComputeDevice::Cpu);
     assert(defaults.rewrite_device == dictscribe::app::ComputeDevice::Cpu);
     assert(!defaults.overlay_position.has_value());
+
+    {
+        std::ofstream legacy(path, std::ios::binary | std::ios::trunc);
+        legacy << R"({"language":"en"})";
+    }
+    assert(dictscribe::app::LoadSettings(path).language == "en-US");
 
     dictscribe::app::AppSettings reconciled;
     dictscribe::app::PendingDeviceSettings pending;

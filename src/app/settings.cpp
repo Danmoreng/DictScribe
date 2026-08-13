@@ -1,6 +1,7 @@
 #include "app/settings.hpp"
 
 #include "app/app_controller.hpp"
+#include "app/language_catalog.hpp"
 
 #include <cstdlib>
 #include <fstream>
@@ -36,7 +37,7 @@ std::filesystem::path EnvironmentPath(const char* name) {
 } // namespace
 
 bool IsSupportedLanguage(const std::string& language) {
-    return language == "auto" || language == "de" || language == "en";
+    return IsSupportedLanguageCode(language);
 }
 
 CleanupMode ParseCleanupMode(const std::string& value) {
@@ -79,8 +80,8 @@ AppSettings LoadSettings(const std::filesystem::path& path) {
 
     const auto language = document.find("language");
     if (language != document.end() && language->is_string()) {
-        const std::string value = language->get<std::string>();
-        if (IsSupportedLanguage(value)) settings.language = value;
+        const std::string value = CanonicalLanguageCode(language->get<std::string>());
+        if (!value.empty()) settings.language = value;
     }
     const auto cleanup_mode = document.find("cleanupMode");
     if (cleanup_mode != document.end() && cleanup_mode->is_string()) {
@@ -128,7 +129,10 @@ bool SaveSettings(
 
     nlohmann::json document = {
         {"version", 3},
-        {"language", IsSupportedLanguage(settings.language) ? settings.language : "auto"},
+        {"language", [&settings] {
+            const std::string language = CanonicalLanguageCode(settings.language);
+            return language.empty() ? std::string("auto") : language;
+        }()},
         {"cleanupMode", CleanupModeName(settings.cleanup_mode)},
         {"asrDevice", ComputeDeviceName(settings.asr_device)},
         {"rewriteDevice", ComputeDeviceName(settings.rewrite_device)},

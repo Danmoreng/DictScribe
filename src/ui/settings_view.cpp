@@ -1,5 +1,7 @@
 #include "ui/settings_view.hpp"
 
+#include "app/language_catalog.hpp"
+
 #include <algorithm>
 #include <array>
 #include <string_view>
@@ -22,6 +24,7 @@ constexpr SkColor kMuted = SkColorSetRGB(158, 167, 184);
 constexpr SkColor kDisabled = SkColorSetRGB(89, 96, 110);
 constexpr SkColor kAccent = SkColorSetRGB(139, 124, 255);
 constexpr SkColor kWarning = SkColorSetRGB(255, 186, 85);
+constexpr std::size_t kVisibleLanguageRows = 8;
 
 SkPaint Fill(SkColor color) {
     SkPaint paint;
@@ -104,18 +107,17 @@ SettingsViewLayout RenderSettingsView(
     SegmentedButton(canvas, layout.close, "Done", false, true, control_font);
 
     Text(canvas, "DICTATION LANGUAGE", 32.0F, 114.0F, section_font, kMuted);
-    const float language_width = (width - 64.0F - 16.0F) / 3.0F;
-    layout.language_auto = SkRect::MakeXYWH(32.0F, 128.0F, language_width, 38.0F);
-    layout.language_german = SkRect::MakeXYWH(
-        40.0F + language_width, 128.0F, language_width, 38.0F);
-    layout.language_english = SkRect::MakeXYWH(
-        48.0F + language_width * 2.0F, 128.0F, language_width, 38.0F);
-    SegmentedButton(
-        canvas, layout.language_auto, "Automatic", model.settings.language == "auto", true, control_font);
-    SegmentedButton(
-        canvas, layout.language_german, "Deutsch", model.settings.language == "de", true, control_font);
-    SegmentedButton(
-        canvas, layout.language_english, "English", model.settings.language == "en", true, control_font);
+    layout.language_select = SkRect::MakeXYWH(32.0F, 128.0F, width - 64.0F, 40.0F);
+    canvas.drawRoundRect(
+        layout.language_select,
+        8.0F,
+        8.0F,
+        Fill(model.language_select_hovered ? SkColorSetRGB(38, 44, 57) : kControl));
+    Outline(canvas, layout.language_select, 8.0F);
+    Text(
+        canvas, app::LanguageDisplayName(model.settings.language),
+        46.0F, 153.5F, body_font, kText);
+    Text(canvas, model.language_menu_open ? "^" : "v", width - 55.0F, 153.5F, control_font, kMuted);
 
     Text(canvas, "TRANSCRIPT CLEANUP", 32.0F, 202.0F, section_font, kMuted);
     layout.cleanup_off = SkRect::MakeXYWH(32.0F, 216.0F, 128.0F, 38.0F);
@@ -169,6 +171,47 @@ SettingsViewLayout RenderSettingsView(
     if (!model.notice.empty()) {
         Text(canvas, model.notice, 32.0F, std::min(height - 14.0F, 646.0F), detail_font, kWarning);
     }
+
+    if (model.language_menu_open) {
+        const int maximum_scroll = std::max(
+            0, static_cast<int>(app::kLanguageOptions.size() - kVisibleLanguageRows));
+        const int scroll = std::clamp(model.language_menu_scroll, 0, maximum_scroll);
+        layout.language_menu = SkRect::MakeXYWH(
+            32.0F, 174.0F, width - 64.0F,
+            12.0F + static_cast<float>(kVisibleLanguageRows) * 32.0F);
+        canvas.drawRoundRect(layout.language_menu, 9.0F, 9.0F, Fill(kSurface));
+        Outline(canvas, layout.language_menu, 9.0F);
+        for (std::size_t row = 0; row < kVisibleLanguageRows; ++row) {
+            const std::size_t index = static_cast<std::size_t>(scroll) + row;
+            if (index >= app::kLanguageOptions.size()) break;
+            const SkRect option = SkRect::MakeXYWH(
+                layout.language_menu.left() + 6.0F,
+                layout.language_menu.top() + 6.0F + static_cast<float>(row) * 32.0F,
+                layout.language_menu.width() - 20.0F,
+                32.0F);
+            layout.language_options[layout.language_option_count] = option;
+            layout.language_option_indices[layout.language_option_count] = index;
+            ++layout.language_option_count;
+            if (static_cast<int>(index) == model.language_menu_highlight) {
+                canvas.drawRoundRect(option, 6.0F, 6.0F, Fill(SkColorSetRGB(36, 42, 55)));
+            } else if (app::kLanguageOptions[index].code ==
+                       app::CanonicalLanguageCode(model.settings.language)) {
+                canvas.drawRoundRect(option, 6.0F, 6.0F, Fill(kSelected));
+            }
+            Text(
+                canvas, app::kLanguageOptions[index].label,
+                option.left() + 10.0F, option.centerY() + 4.5F, body_font, kText);
+        }
+        const float track_height = layout.language_menu.height() - 20.0F;
+        const float thumb_height = track_height * static_cast<float>(kVisibleLanguageRows) /
+            static_cast<float>(app::kLanguageOptions.size());
+        const float thumb_y = layout.language_menu.top() + 10.0F +
+            (track_height - thumb_height) * static_cast<float>(scroll) /
+            static_cast<float>(std::max(maximum_scroll, 1));
+        canvas.drawRoundRect(
+            SkRect::MakeXYWH(layout.language_menu.right() - 9.0F, thumb_y, 3.0F, thumb_height),
+            1.5F, 1.5F, Fill(kMuted));
+    }
     return layout;
 }
 
@@ -177,10 +220,19 @@ SettingsAction HitTestSettingsView(
     float x,
     float y,
     bool device_controls_enabled) {
+    if (!layout.language_menu.isEmpty()) {
+        for (std::size_t index = 0; index < layout.language_option_count; ++index) {
+            if (layout.language_options[index].contains(x, y)) {
+                return LanguageSelectionAction(layout.language_option_indices[index]);
+            }
+        }
+        if (layout.language_select.contains(x, y) || !layout.language_menu.contains(x, y)) {
+            return SettingsAction::ToggleLanguageMenu;
+        }
+        return SettingsAction::NoAction;
+    }
     if (layout.close.contains(x, y)) return SettingsAction::Close;
-    if (layout.language_auto.contains(x, y)) return SettingsAction::LanguageAuto;
-    if (layout.language_german.contains(x, y)) return SettingsAction::LanguageGerman;
-    if (layout.language_english.contains(x, y)) return SettingsAction::LanguageEnglish;
+    if (layout.language_select.contains(x, y)) return SettingsAction::ToggleLanguageMenu;
     if (layout.cleanup_off.contains(x, y)) return SettingsAction::CleanupOff;
     if (layout.cleanup_ai.contains(x, y)) return SettingsAction::CleanupAi;
     if (!device_controls_enabled) return SettingsAction::NoAction;

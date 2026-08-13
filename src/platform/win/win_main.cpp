@@ -7,6 +7,7 @@
 #include <shellapi.h>
 
 #include "app/app_controller.hpp"
+#include "app/language_catalog.hpp"
 #include "app/model_discovery.hpp"
 #include "app/settings.hpp"
 #include "platform/win/win_overlay.hpp"
@@ -35,9 +36,7 @@ constexpr int kCancelHotkey = 3;
 constexpr UINT kCommandToggle = 100;
 constexpr UINT kCommandSettings = 101;
 constexpr UINT kCommandPipelineDebug = 102;
-constexpr UINT kCommandLanguageAuto = 110;
-constexpr UINT kCommandLanguageGerman = 111;
-constexpr UINT kCommandLanguageEnglish = 112;
+constexpr UINT kCommandLanguageBase = 110;
 constexpr UINT kCommandQuit = 199;
 
 std::string WideToUtf8(std::wstring_view text) {
@@ -236,6 +235,17 @@ private:
     }
 
     void handle_hotkey(int id) {
+        if (id == kAcceptHotkey || id == kCancelHotkey) {
+            const WPARAM key = id == kAcceptHotkey ? VK_RETURN : VK_ESCAPE;
+            if (settings_window_.language_menu_open()) {
+                SendMessageW(settings_window_.window(), WM_KEYDOWN, key, 0);
+                return;
+            }
+            if (overlay_.language_menu_open()) {
+                SendMessageW(overlay_.window(), WM_KEYDOWN, key, 0);
+                return;
+            }
+        }
         if (id == kCancelHotkey) {
             cancel_dictation();
         } else if (id == kToggleHotkey || id == kAcceptHotkey) {
@@ -404,21 +414,17 @@ private:
         AppendMenuW(menu, MF_STRING, kCommandSettings, L"Settings...");
         AppendMenuW(menu, MF_STRING, kCommandPipelineDebug, L"Pipeline debugger...");
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
-        AppendMenuW(
-            menu,
-            MF_STRING | (snapshot.language == "auto" ? MF_CHECKED : 0),
-            kCommandLanguageAuto,
-            L"Language: Auto");
-        AppendMenuW(
-            menu,
-            MF_STRING | (snapshot.language == "de" ? MF_CHECKED : 0),
-            kCommandLanguageGerman,
-            L"Language: Deutsch");
-        AppendMenuW(
-            menu,
-            MF_STRING | (snapshot.language == "en" ? MF_CHECKED : 0),
-            kCommandLanguageEnglish,
-            L"Language: English");
+        HMENU language_menu = CreatePopupMenu();
+        for (std::size_t index = 0; index < app::kLanguageOptions.size(); ++index) {
+            const auto& option = app::kLanguageOptions[index];
+            const std::wstring label(option.label.begin(), option.label.end());
+            AppendMenuW(
+                language_menu,
+                MF_STRING | (snapshot.language == option.code ? MF_CHECKED : 0),
+                kCommandLanguageBase + static_cast<UINT>(index),
+                label.c_str());
+        }
+        AppendMenuW(menu, MF_POPUP, reinterpret_cast<UINT_PTR>(language_menu), L"Dictation language");
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, MF_STRING, kCommandQuit, L"Quit DictScribe");
 
@@ -430,6 +436,12 @@ private:
     }
 
     void handle_command(UINT command) {
+        if (command >= kCommandLanguageBase &&
+            command < kCommandLanguageBase + app::kLanguageOptions.size()) {
+            select_language(std::string(
+                app::kLanguageOptions[command - kCommandLanguageBase].code));
+            return;
+        }
         switch (command) {
         case kCommandToggle:
             toggle_dictation();
@@ -440,15 +452,6 @@ private:
         case kCommandPipelineDebug:
             pipeline_debug_window_.update(controller_.snapshot().pipeline_debug);
             pipeline_debug_window_.show();
-            break;
-        case kCommandLanguageAuto:
-            select_language("auto");
-            break;
-        case kCommandLanguageGerman:
-            select_language("de");
-            break;
-        case kCommandLanguageEnglish:
-            select_language("en");
             break;
         case kCommandQuit:
             DestroyWindow(control_window_);
@@ -488,16 +491,12 @@ private:
     }
 
     void apply_settings_action(ui::SettingsAction action) {
-        if (action == ui::SettingsAction::LanguageAuto) {
-            select_language("auto");
-            return;
-        }
-        if (action == ui::SettingsAction::LanguageGerman) {
-            select_language("de");
-            return;
-        }
-        if (action == ui::SettingsAction::LanguageEnglish) {
-            select_language("en");
+        if (ui::IsLanguageSelection(action)) {
+            const std::size_t index = ui::LanguageSelectionIndex(action);
+            if (index < app::kLanguageOptions.size()) {
+                select_language(std::string(app::kLanguageOptions[index].code));
+                settings_window_.update(settings_view_model(controller_.snapshot()));
+            }
             return;
         }
         if (action == ui::SettingsAction::CleanupOff ||

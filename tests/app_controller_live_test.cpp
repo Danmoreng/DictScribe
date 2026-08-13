@@ -37,7 +37,7 @@ dictscribe::app::AppConfig config(dictscribe::app::CleanupMode mode) {
     result.rewrite_worker = DICTSCRIBE_FAKE_REWRITE_WORKER;
     result.asr_model = "unused-asr.gguf";
     result.rewrite_model = "unused-rewrite.gguf";
-    result.language = "de";
+    result.language = "de-DE";
     result.cleanup_mode = mode;
     return result;
 }
@@ -121,15 +121,15 @@ int main() {
     std::this_thread::sleep_for(200ms);
     assert(raw_controller.snapshot().rewritten_text == committed);
 
-    raw_controller.set_language("en");
+    raw_controller.set_language("en-US");
     raw_controller.toggle_recording();
     wait_until(raw_controller, [](const auto& state) {
         return state.mode == DictationMode::Recording &&
             state.live_text.find("further ") != std::string::npos;
     });
-    raw_controller.set_language("de");
+    raw_controller.set_language("de-DE");
     const auto switched = wait_until(raw_controller, [](const auto& state) {
-        return state.mode == DictationMode::Recording && state.language == "de" &&
+        return state.mode == DictationMode::Recording && state.language == "de-DE" &&
             state.live_text.find("further final ") != std::string::npos &&
             state.live_text.find("weiter ") != std::string::npos;
     });
@@ -182,7 +182,7 @@ int main() {
             state.pipeline_debug.rewrite_decision.find("Accepted") != std::string::npos &&
             state.live_text.find("Ich teste die lokale Spracherkennung") != std::string::npos;
     });
-    truncating_controller.set_language("en");
+    truncating_controller.set_language("en-US");
     const auto preserved_preview = wait_until(truncating_controller, [](const auto& state) {
         return state.mode == DictationMode::Recording &&
             state.error.find("incomplete tail") != std::string::npos &&

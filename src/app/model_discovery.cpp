@@ -1,4 +1,5 @@
 #include "app/model_discovery.hpp"
+#include "app/language_catalog.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -222,15 +223,13 @@ DiscoveryResult DiscoverConfig(int argc, char** argv) {
         return result;
     }
 
-    std::transform(
-        result.config.language.begin(),
-        result.config.language.end(),
-        result.config.language.begin(),
-        [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
-    if (result.config.language != "auto" && result.config.language != "de" && result.config.language != "en") {
-        result.error = "Unsupported language setting: " + result.config.language + " (expected auto, de, or en)";
+    const std::string canonical_language = CanonicalLanguageCode(result.config.language);
+    if (canonical_language.empty()) {
+        result.error = "Unsupported language setting: " + result.config.language +
+            " (expected auto or a supported locale such as de-DE)";
         return result;
     }
+    result.config.language = canonical_language;
 
     std::vector<std::string> missing;
     if (!IsFile(result.config.asr_worker)) missing.push_back("ASR worker");
@@ -270,7 +269,7 @@ const char* CommandLineHelp() {
         "  --rewrite-model PATH   Override the rewrite GGUF path\n"
         "  --asr-worker PATH      Override the ASR worker binary\n"
         "  --rewrite-worker PATH  Override the rewrite worker binary\n"
-        "  --language CODE        Initial language: auto, de, or en\n"
+        "  --language CODE        Initial language: auto or a supported locale (for example de-DE)\n"
         "  --asr-device DEVICE    Speech device: cpu or gpu\n"
         "  --rewrite-device DEVICE Cleanup device: cpu or gpu\n"
         "  --cleanup MODE         Cleanup mode: off or ai\n"

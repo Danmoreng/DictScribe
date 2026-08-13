@@ -5,6 +5,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include "app/language_catalog.hpp"
+
 namespace {
 
 void emit(nlohmann::json message) {
@@ -37,13 +39,13 @@ int main(int argc, char** argv) {
     emit({{"type", "ready"}, {"engine", "fake-asr"}});
     std::string line;
     int session_number = 0;
-    std::string active_language = "de";
+    std::string active_language = "de-DE";
     while (std::getline(std::cin, line)) {
         const auto command = nlohmann::json::parse(line);
         const std::string type = command.value("type", "");
         if (type == "start") {
             const std::string language = command.value("language", "");
-            if (language != "auto" && language != "de" && language != "en") {
+            if (!dictscribe::app::IsSupportedLanguageCode(language)) {
                 emit({
                     {"type", "error"},
                     {"code", "WRONG_TEST_LANGUAGE"},
@@ -53,7 +55,7 @@ int main(int argc, char** argv) {
                 continue;
             }
             ++session_number;
-            active_language = language == "auto" ? "de" : language;
+            active_language = language == "auto" ? "de-DE" : language;
             const std::string session = command.value("sessionId", "");
             emit({{"type", "recording_started"}, {"sessionId", session}});
             emit({
@@ -62,12 +64,13 @@ int main(int argc, char** argv) {
                 {"rms", 0.18},
                 {"peak", 0.72},
             });
-            const std::string first = active_language == "en"
+            const bool english = active_language.starts_with("en-");
+            const std::string first = english
                 ? "I am testing the local speech cleanup pipeline with several stable words"
                 : "Ich teste die lokale Spracherkennung mit mehreren stabilen Wörtern im Diktat";
-            const std::string second = first + (active_language == "en"
+            const std::string second = first + (english
                 ? " and llama_rewriter.cpp" : " und llama_rewriter.cpp");
-            const std::string third = second + (active_language == "en" ? " further " : " weiter ") +
+            const std::string third = second + (english ? " further " : " weiter ") +
                 std::to_string(session_number);
             emit({{"type", "transcript_update"}, {"sessionId", session}, {"text", first}});
             std::this_thread::sleep_for(std::chrono::milliseconds(80));
@@ -84,7 +87,7 @@ int main(int argc, char** argv) {
             });
         } else if (type == "stop") {
             const std::string session = command.value("sessionId", "");
-            const std::string final_text = active_language == "en"
+            const std::string final_text = active_language.starts_with("en-")
                 ? "I am testing the local speech cleanup pipeline with several stable words and llama_rewriter.cpp further final " + std::to_string(session_number)
                 : "Ich teste die lokale Spracherkennung mit mehreren stabilen Wörtern im Diktat und llama_rewriter.cpp weiter final " + std::to_string(session_number);
             emit({

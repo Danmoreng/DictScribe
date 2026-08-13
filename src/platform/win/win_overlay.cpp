@@ -1,5 +1,6 @@
 #include "platform/win/win_overlay.hpp"
 
+#include "app/language_catalog.hpp"
 #include "ui/text_layout.hpp"
 
 #include <algorithm>
@@ -11,6 +12,7 @@
 #include <vector>
 
 #include <dwmapi.h>
+#include <shellscalingapi.h>
 #include <windowsx.h>
 
 #pragma warning(push)
@@ -75,6 +77,17 @@ struct WindowCompositionAttributeData {
 using SetWindowCompositionAttributeFunction = BOOL(WINAPI*)(
     HWND,
     WindowCompositionAttributeData*);
+
+UINT EffectiveDpiForMonitor(HMONITOR monitor) {
+    UINT horizontal = 96;
+    UINT vertical = 96;
+    if (monitor && SUCCEEDED(GetDpiForMonitor(
+            monitor, MDT_EFFECTIVE_DPI, &horizontal, &vertical)) && horizontal != 0) {
+        return horizontal;
+    }
+    const UINT system_dpi = GetDpiForSystem();
+    return system_dpi == 0 ? 96 : system_dpi;
+}
 
 bool EnableAcrylicBackdrop(HWND window) {
     HMODULE user32 = GetModuleHandleW(L"user32.dll");
@@ -176,10 +189,8 @@ std::string PlaceholderText(const app::AppSnapshot& snapshot) {
     return "Speak naturally. Your words will appear here.";
 }
 
-const char* LanguageBadge(const app::AppSnapshot& snapshot) {
-    if (snapshot.language == "de") return "DE";
-    if (snapshot.language == "en") return "EN";
-    return "AUTO";
+std::string LanguageBadgeText(const app::AppSnapshot& snapshot) {
+    return app::LanguageBadge(snapshot.language);
 }
 
 const char* StatusLabel(const app::AppSnapshot& snapshot) {
@@ -249,8 +260,10 @@ struct WinOverlay::Impl {
     bool language_pressed = false;
     bool settings_pressed = false;
     bool language_menu_open = false;
+    int language_menu_scroll = 0;
     int pressed_language_option = -1;
     int hovered_language_option = -1;
+    HWND language_menu_previous_foreground = nullptr;
     float scrollbar_track_top = 0.0F;
     float scrollbar_track_bottom = 0.0F;
     float scrollbar_thumb_top = 0.0F;
@@ -270,12 +283,13 @@ struct WinOverlay::Impl {
             static_cast<int>(wrapped_body().size()), 3, 13);
         const int desired = static_cast<int>(
             kBodyTop + content_lines * kBodyLineHeight + 16.0F + kFooterHeight);
-        return std::clamp(desired, kMinimumLogicalHeight, kMaximumLogicalHeight);
+        const int minimum = language_menu_open ? 326 : kMinimumLogicalHeight;
+        return std::clamp(std::max(desired, minimum), kMinimumLogicalHeight, kMaximumLogicalHeight);
     }
 
     SkRect language_badge_rect(float width = static_cast<float>(kLogicalWidth)) const {
-        const std::string_view language = LanguageBadge(snapshot);
-        const float badge_width = language == "AUTO" ? 62.0F : 52.0F;
+        const std::string language = LanguageBadgeText(snapshot);
+        const float badge_width = language == "AUTO" ? 62.0F : 72.0F;
         return SkRect::MakeXYWH(width - 150.0F - badge_width, 11.0F, badge_width, 30.0F);
     }
 
@@ -290,7 +304,7 @@ struct WinOverlay::Impl {
     }
 
     SkRect settings_button_rect() const {
-        return SkRect::MakeXYWH(410.0F, 11.0F, 88.0F, 30.0F);
+        return SkRect::MakeXYWH(398.0F, 11.0F, 88.0F, 30.0F);
     }
 
     bool settings_button_contains(int client_x, int client_y) const {
@@ -302,17 +316,17 @@ struct WinOverlay::Impl {
 
     SkRect language_menu_rect(float width = static_cast<float>(kLogicalWidth)) const {
         const SkRect badge = language_badge_rect(width);
-        return SkRect::MakeXYWH(badge.right() - 184.0F, badge.bottom() + 6.0F, 184.0F, 114.0F);
+        return SkRect::MakeXYWH(badge.right() - 270.0F, badge.bottom() + 6.0F, 270.0F, 268.0F);
     }
 
     SkRect language_option_rect(
-        int option,
+        int row,
         float width = static_cast<float>(kLogicalWidth)) const {
         const SkRect menu = language_menu_rect(width);
         return SkRect::MakeXYWH(
             menu.left() + 6.0F,
-            menu.top() + 6.0F + static_cast<float>(option) * 34.0F,
-            menu.width() - 12.0F,
+            menu.top() + 6.0F + static_cast<float>(row) * 32.0F,
+            menu.width() - 20.0F,
             30.0F);
     }
 
@@ -324,19 +338,81 @@ struct WinOverlay::Impl {
         const float width = static_cast<float>(client.right - client.left) / scale;
         const float logical_x = static_cast<float>(client_x) / scale;
         const float logical_y = static_cast<float>(client_y) / scale;
-        for (int option = 0; option < 3; ++option) {
-            if (language_option_rect(option, width).contains(logical_x, logical_y)) {
-                return option;
+        for (int row = 0; row < 8; ++row) {
+            if (language_option_rect(row, width).contains(logical_x, logical_y)) {
+                const int option = language_menu_scroll + row;
+                return option < static_cast<int>(app::kLanguageOptions.size()) ? option : -1;
             }
         }
         return -1;
     }
 
     void choose_language(int option) const {
-        if (!language_handler) return;
-        if (option == 0) language_handler("auto");
-        else if (option == 1) language_handler("de");
-        else if (option == 2) language_handler("en");
+        if (!language_handler || option < 0 ||
+            option >= static_cast<int>(app::kLanguageOptions.size())) return;
+        language_handler(std::string(app::kLanguageOptions[option].code));
+    }
+
+    int maximum_language_scroll() const {
+        return std::max(0, static_cast<int>(app::kLanguageOptions.size()) - 8);
+    }
+
+    void ensure_language_visible(int option) {
+        if (option < language_menu_scroll) {
+            language_menu_scroll = option;
+        } else if (option >= language_menu_scroll + 8) {
+            language_menu_scroll = option - 7;
+        }
+        language_menu_scroll = std::clamp(
+            language_menu_scroll, 0, maximum_language_scroll());
+    }
+
+    void set_language_menu_open(bool open) {
+        if (language_menu_open == open) return;
+        language_menu_open = open;
+        pressed_language_option = -1;
+        if (open) {
+            hovered_language_option = static_cast<int>(
+                app::LanguageOptionIndex(snapshot.language));
+            language_menu_scroll = std::clamp(
+                hovered_language_option - 3, 0, maximum_language_scroll());
+            language_menu_previous_foreground = GetForegroundWindow();
+            if (language_menu_previous_foreground == hwnd) {
+                language_menu_previous_foreground = nullptr;
+            }
+            const LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style & ~WS_EX_NOACTIVATE);
+            SetWindowPos(
+                hwnd, nullptr, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+            SetForegroundWindow(hwnd);
+            SetFocus(hwnd);
+        } else {
+            hovered_language_option = -1;
+            const LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+            SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style | WS_EX_NOACTIVATE);
+            SetWindowPos(
+                hwnd, nullptr, 0, 0, 0, 0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+            if (language_menu_previous_foreground &&
+                IsWindow(language_menu_previous_foreground)) {
+                SetForegroundWindow(language_menu_previous_foreground);
+            }
+            language_menu_previous_foreground = nullptr;
+        }
+        resize_to_content();
+        InvalidateRect(hwnd, nullptr, FALSE);
+    }
+
+    void move_language_highlight(int delta) {
+        int option = hovered_language_option;
+        if (option < 0) option = static_cast<int>(
+            app::LanguageOptionIndex(snapshot.language));
+        option = std::clamp(
+            option + delta, 0, static_cast<int>(app::kLanguageOptions.size()) - 1);
+        hovered_language_option = option;
+        ensure_language_visible(option);
+        InvalidateRect(hwnd, nullptr, FALSE);
     }
 
     static LRESULT CALLBACK BackdropWindowProc(
@@ -460,7 +536,7 @@ struct WinOverlay::Impl {
         case WM_ERASEBKGND:
             return 1;
         case WM_MOUSEACTIVATE:
-            return MA_NOACTIVATE;
+            return self->language_menu_open ? MA_ACTIVATE : MA_NOACTIVATE;
         case WM_NCHITTEST: {
             POINT point{GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param)};
             ScreenToClient(hwnd, &point);
@@ -473,7 +549,13 @@ struct WinOverlay::Impl {
         }
         case WM_MOUSEWHEEL: {
             if (self->language_menu_open) {
-                self->language_menu_open = false;
+                const int delta = GET_WHEEL_DELTA_WPARAM(w_param);
+                const int steps = std::abs(delta) >= WHEEL_DELTA
+                    ? delta / WHEEL_DELTA : (delta > 0 ? 1 : -1);
+                self->language_menu_scroll = std::clamp(
+                    self->language_menu_scroll - steps,
+                    0,
+                    self->maximum_language_scroll());
                 self->hovered_language_option = -1;
                 InvalidateRect(hwnd, nullptr, FALSE);
                 return 0;
@@ -502,8 +584,7 @@ struct WinOverlay::Impl {
                     self->pressed_language_option = option;
                     SetCapture(hwnd);
                 } else {
-                    self->language_menu_open = false;
-                    self->hovered_language_option = -1;
+                    self->set_language_menu_open(false);
                 }
                 InvalidateRect(hwnd, nullptr, FALSE);
                 return 0;
@@ -543,6 +624,33 @@ struct WinOverlay::Impl {
                 self->scroll_from_client_y(GET_Y_LPARAM(l_param), true);
             }
             return 0;
+        case WM_KEYDOWN:
+            if (self->language_menu_open) {
+                if (w_param == VK_UP) self->move_language_highlight(-1);
+                else if (w_param == VK_DOWN) self->move_language_highlight(1);
+                else if (w_param == VK_PRIOR) self->move_language_highlight(-8);
+                else if (w_param == VK_NEXT) self->move_language_highlight(8);
+                else if (w_param == VK_HOME) {
+                    self->hovered_language_option = 0;
+                    self->ensure_language_visible(0);
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                } else if (w_param == VK_END) {
+                    self->hovered_language_option =
+                        static_cast<int>(app::kLanguageOptions.size()) - 1;
+                    self->ensure_language_visible(self->hovered_language_option);
+                    InvalidateRect(hwnd, nullptr, FALSE);
+                } else if (w_param == VK_RETURN) {
+                    const int option = self->hovered_language_option;
+                    self->set_language_menu_open(false);
+                    self->choose_language(option);
+                } else if (w_param == VK_ESCAPE) {
+                    self->set_language_menu_open(false);
+                } else {
+                    break;
+                }
+                return 0;
+            }
+            break;
         case WM_MOUSELEAVE:
             if (self->hovered_language_option >= 0) {
                 self->hovered_language_option = -1;
@@ -555,7 +663,10 @@ struct WinOverlay::Impl {
                     GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param));
                 self->settings_pressed = false;
                 ReleaseCapture();
-                if (activate && self->settings_handler) self->settings_handler();
+                if (activate && self->settings_handler) {
+                    self->set_language_menu_open(false);
+                    self->settings_handler();
+                }
                 InvalidateRect(hwnd, nullptr, FALSE);
                 return 0;
             }
@@ -565,8 +676,7 @@ struct WinOverlay::Impl {
                 self->language_pressed = false;
                 ReleaseCapture();
                 if (toggle_menu) {
-                    self->language_menu_open = !self->language_menu_open;
-                    self->hovered_language_option = -1;
+                    self->set_language_menu_open(!self->language_menu_open);
                 }
                 InvalidateRect(hwnd, nullptr, FALSE);
                 return 0;
@@ -578,8 +688,7 @@ struct WinOverlay::Impl {
                 self->pressed_language_option = -1;
                 ReleaseCapture();
                 if (pressed == released) {
-                    self->language_menu_open = false;
-                    self->hovered_language_option = -1;
+                    self->set_language_menu_open(false);
                     self->choose_language(pressed);
                 }
                 InvalidateRect(hwnd, nullptr, FALSE);
@@ -661,6 +770,7 @@ struct WinOverlay::Impl {
         default:
             return DefWindowProcW(hwnd, message, w_param, l_param);
         }
+        return DefWindowProcW(hwnd, message, w_param, l_param);
     }
 
     bool ensure_surface() {
@@ -774,7 +884,7 @@ struct WinOverlay::Impl {
         canvas->drawCircle(28.0F, 26.0F, 5.0F, Fill(status_color));
         DrawText(canvas[0], StatusLabel(snapshot), 43.0F, 31.0F, status_font, kText);
 
-        const std::string_view language = LanguageBadge(snapshot);
+        const std::string language = LanguageBadgeText(snapshot);
         const SkRect badge_rect = language_badge_rect(width);
         const float badge_x = badge_rect.left();
         const SkColor badge_fill = language_pressed ? kBorder : kElevated;
@@ -822,7 +932,13 @@ struct WinOverlay::Impl {
             7.0F,
             Fill(settings_pressed ? kBorder : kElevated));
         canvas->drawRoundRect(settings_rect, 7.0F, 7.0F, badge_border);
-        DrawText(canvas[0], "Settings", 426.0F, 30.5F, hint_font, kMuted);
+        DrawText(
+            canvas[0],
+            "Settings",
+            settings_rect.centerX() - TextWidth(hint_font, "Settings") * 0.5F,
+            30.5F,
+            hint_font,
+            kMuted);
 
         const float meter_start_x = width - 132.0F;
         for (std::size_t index = 0; index < level_history.size(); ++index) {
@@ -965,15 +1081,11 @@ struct WinOverlay::Impl {
                 9.0F,
                 menu_border);
 
-            const std::array<std::string_view, 3> labels = {
-                "Automatic detection",
-                "Deutsch",
-                "English",
-            };
-            const int selected = snapshot.language == "de" ? 1 :
-                (snapshot.language == "en" ? 2 : 0);
-            for (int option = 0; option < 3; ++option) {
-                const SkRect item = language_option_rect(option, width);
+            const int selected = static_cast<int>(app::LanguageOptionIndex(snapshot.language));
+            for (int row = 0; row < 8; ++row) {
+                const int option = language_menu_scroll + row;
+                if (option >= static_cast<int>(app::kLanguageOptions.size())) break;
+                const SkRect item = language_option_rect(row, width);
                 if (option == pressed_language_option) {
                     canvas->drawRoundRect(item, 6.0F, 6.0F, Fill(kBorder));
                 } else if (option == hovered_language_option) {
@@ -998,12 +1110,28 @@ struct WinOverlay::Impl {
                 }
                 DrawText(
                     canvas[0],
-                    labels[static_cast<std::size_t>(option)],
+                    app::kLanguageOptions[static_cast<std::size_t>(option)].label,
                     item.left() + 27.0F,
                     center_y + 4.5F,
                     menu_font,
                     option == selected ? kText : kMuted);
             }
+            const float track_height = menu_rect.height() - 20.0F;
+            const float thumb_height = track_height * 8.0F /
+                static_cast<float>(app::kLanguageOptions.size());
+            const float thumb_y = menu_rect.top() + 10.0F +
+                (track_height - thumb_height) * static_cast<float>(language_menu_scroll) /
+                static_cast<float>(std::max(maximum_language_scroll(), 1));
+            canvas->drawRoundRect(
+                SkRect::MakeXYWH(menu_rect.right() - 9.0F, menu_rect.top() + 10.0F, 3.0F, track_height),
+                1.5F,
+                1.5F,
+                Fill(kSurface));
+            canvas->drawRoundRect(
+                SkRect::MakeXYWH(menu_rect.right() - 9.0F, thumb_y, 3.0F, thumb_height),
+                1.5F,
+                1.5F,
+                Fill(kMuted));
         }
 
         canvas->drawRoundRect(
@@ -1153,15 +1281,14 @@ void WinOverlay::update(const app::AppSnapshot& snapshot, std::string notice) {
 }
 
 void WinOverlay::show_near(const TargetContext& target) {
-    impl_->dpi = target.window ? GetDpiForWindow(target.window) : 96;
-    if (impl_->dpi == 0) impl_->dpi = 96;
+    const POINT placement_anchor = impl_->preferred_position.value_or(target.anchor);
+    HMONITOR monitor = MonitorFromPoint(placement_anchor, MONITOR_DEFAULTTONEAREST);
+    impl_->dpi = EffectiveDpiForMonitor(monitor);
     const int width = MulDiv(kLogicalWidth, static_cast<int>(impl_->dpi), 96);
     const int height = MulDiv(
         impl_->desired_logical_height(), static_cast<int>(impl_->dpi), 96);
     const int gap = MulDiv(target.caret_anchor ? 12 : 20, static_cast<int>(impl_->dpi), 96);
 
-    const POINT placement_anchor = impl_->preferred_position.value_or(target.anchor);
-    HMONITOR monitor = MonitorFromPoint(placement_anchor, MONITOR_DEFAULTTONEAREST);
     MONITORINFO info{};
     info.cbSize = sizeof(info);
     GetMonitorInfoW(monitor, &info);
@@ -1200,6 +1327,7 @@ void WinOverlay::show_near(const TargetContext& target) {
 }
 
 void WinOverlay::hide() {
+    if (impl_->language_menu_open) impl_->set_language_menu_open(false);
     ShowWindow(impl_->hwnd, SW_HIDE);
     if (impl_->backdrop_hwnd) ShowWindow(impl_->backdrop_hwnd, SW_HIDE);
 }
@@ -1207,5 +1335,9 @@ void WinOverlay::hide() {
 HWND WinOverlay::window() const { return impl_->hwnd; }
 
 bool WinOverlay::visible() const { return impl_->hwnd && IsWindowVisible(impl_->hwnd); }
+
+bool WinOverlay::language_menu_open() const {
+    return impl_->language_menu_open;
+}
 
 } // namespace dictscribe::win

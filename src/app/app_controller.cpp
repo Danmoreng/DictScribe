@@ -1,4 +1,5 @@
 #include "app/app_controller.hpp"
+#include "app/language_catalog.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -48,10 +49,12 @@ bool AppController::start(const AppConfig& config) {
     {
         std::lock_guard lock(mutex_);
         config_ = config;
+        const std::string language = CanonicalLanguageCode(config.language);
+        config_.language = language.empty() ? "auto" : language;
         state_ = {};
         state_.asr_model_name = FileName(config.asr_model);
         state_.rewrite_model_name = FileName(config.rewrite_model);
-        state_.language = config.language;
+        state_.language = config_.language;
         state_.cleanup_mode = config.cleanup_mode;
         state_.asr_use_gpu = config.asr_use_gpu;
         state_.rewrite_use_gpu = config.rewrite_use_gpu;
@@ -206,10 +209,9 @@ void AppController::cancel_recording() {
 
 void AppController::set_language(std::string language) {
     std::lock_guard lock(mutex_);
-    if (!CanSetLanguage(state_) ||
-        (language != "auto" && language != "de" && language != "en") ||
-        language == state_.language) return;
-    state_.language = std::move(language);
+    const std::string canonical = CanonicalLanguageCode(language);
+    if (!CanSetLanguage(state_) || canonical.empty() || canonical == state_.language) return;
+    state_.language = canonical;
     if (state_.mode == DictationMode::Recording ||
         state_.mode == DictationMode::StartingRecording) {
         stop_for_language_change_locked();
@@ -703,10 +705,8 @@ bool CanSetComputeDevice(const AppSnapshot& snapshot) {
     return CanSetCleanupMode(snapshot);
 }
 
-const char* LanguageLabel(const AppSnapshot& snapshot) {
-    if (snapshot.language == "de") return "Language: Deutsch";
-    if (snapshot.language == "en") return "Language: English";
-    return "Language: Auto";
+std::string LanguageLabel(const AppSnapshot& snapshot) {
+    return "Language: " + std::string(LanguageDisplayName(snapshot.language));
 }
 
 const char* PrimaryButtonLabel(const AppSnapshot& snapshot) {

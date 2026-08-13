@@ -88,7 +88,7 @@ find_package(Threads REQUIRED)
 add_executable(dictscribe-fake-asr-worker tests/fake_asr_worker.cpp)
 add_executable(dictscribe-fake-rewrite-worker tests/fake_rewrite_worker.cpp)
 foreach(fake_worker dictscribe-fake-asr-worker dictscribe-fake-rewrite-worker)
-    target_include_directories(${fake_worker} PRIVATE third_party/nlohmann-json/single_include)
+    target_include_directories(${fake_worker} PRIVATE src third_party/nlohmann-json/single_include)
 endforeach()
 
 add_executable(dictscribe-app-controller-tests
@@ -226,6 +226,7 @@ if(DICTSCRIBE_BUILD_UI)
             gdi32.lib
             shell32.lib
             dwmapi.lib
+            shcore.lib
         )
     else()
         target_link_libraries(dictscribe PRIVATE

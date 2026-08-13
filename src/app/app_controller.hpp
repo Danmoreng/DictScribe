@@ -136,6 +136,6 @@ private:
 [[nodiscard]] bool CanSetCleanupMode(const AppSnapshot& snapshot);
 [[nodiscard]] bool CanSetComputeDevice(const AppSnapshot& snapshot);
 [[nodiscard]] const char* PrimaryButtonLabel(const AppSnapshot& snapshot);
-[[nodiscard]] const char* LanguageLabel(const AppSnapshot& snapshot);
+[[nodiscard]] std::string LanguageLabel(const AppSnapshot& snapshot);
 
 } // namespace dictscribe::app

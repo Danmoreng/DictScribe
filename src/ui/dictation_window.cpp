@@ -1,6 +1,7 @@
 #include "ui/dictation_window.hpp"
 
 #include "app/app_controller.hpp"
+#include "app/language_catalog.hpp"
 #include "app/settings.hpp"
 #include "platform/linux/linux_x11.hpp"
 #include "ui/settings_view.hpp"
@@ -70,6 +71,7 @@ struct WindowState {
     app::PendingDeviceSettings pending_devices;
     SkRect language_menu = SkRect::MakeEmpty();
     bool language_menu_open = false;
+    int language_menu_scroll = 0;
     bool session_active = false;
     bool dragging = false;
     int drag_window_x = 0;
@@ -156,10 +158,8 @@ std::string PlaceholderText(const app::AppSnapshot& snapshot) {
     return "Speak naturally. Your words will appear here.";
 }
 
-const char* LanguageBadge(const app::AppSnapshot& snapshot) {
-    if (snapshot.language == "de") return "DE";
-    if (snapshot.language == "en") return "EN";
-    return "AUTO";
+std::string LanguageBadgeText(const app::AppSnapshot& snapshot) {
+    return app::LanguageBadge(snapshot.language);
 }
 
 const char* StatusLabel(const app::AppSnapshot& snapshot) {
@@ -257,27 +257,27 @@ void ConfigureOverlayWindow(GLFWwindow* window) {
 }
 
 SkRect LanguageBadgeRect(const app::AppSnapshot& snapshot) {
-    const float width = std::string_view(LanguageBadge(snapshot)) == "AUTO" ? 62.0F : 52.0F;
+    const float width = LanguageBadgeText(snapshot) == "AUTO" ? 62.0F : 72.0F;
     return SkRect::MakeXYWH(static_cast<float>(kLogicalWidth) - 150.0F - width, 11.0F, width, 30.0F);
 }
 
 SkRect LanguageMenuRect(const app::AppSnapshot& snapshot) {
     const SkRect badge = LanguageBadgeRect(snapshot);
-    return SkRect::MakeXYWH(badge.right() - 184.0F, badge.bottom() + 6.0F, 184.0F, 114.0F);
+    return SkRect::MakeXYWH(badge.right() - 270.0F, badge.bottom() + 6.0F, 270.0F, 268.0F);
 }
 
-SkRect LanguageOptionRect(const app::AppSnapshot& snapshot, int option) {
+SkRect LanguageOptionRect(const app::AppSnapshot& snapshot, int row) {
     const SkRect menu = LanguageMenuRect(snapshot);
     return SkRect::MakeXYWH(
         menu.left() + 6.0F,
-        menu.top() + 6.0F + static_cast<float>(option) * 34.0F,
-        menu.width() - 12.0F,
+        menu.top() + 6.0F + static_cast<float>(row) * 32.0F,
+        menu.width() - 20.0F,
         30.0F);
 }
 
 void SelectLanguage(WindowState& state, int option) {
-    const char* language = option == 1 ? "de" : (option == 2 ? "en" : "auto");
-    state.controller->set_language(language);
+    if (option < 0 || static_cast<std::size_t>(option) >= app::kLanguageOptions.size()) return;
+    state.controller->set_language(std::string(app::kLanguageOptions[option].code));
     state.settings->language = state.controller->snapshot().language;
     std::string error;
     if (!app::SaveSettings(*state.settings, error)) {
@@ -298,13 +298,24 @@ void ApplySettingsAction(WindowState& state, SettingsAction action) {
         glfwHideWindow(state.settings_window);
         return;
     }
-    if (action == SettingsAction::LanguageAuto ||
-        action == SettingsAction::LanguageGerman ||
-        action == SettingsAction::LanguageEnglish) {
-        SelectLanguage(
-            state,
-            action == SettingsAction::LanguageGerman ? 1 :
-                (action == SettingsAction::LanguageEnglish ? 2 : 0));
+    if (action == SettingsAction::ToggleLanguageMenu) {
+        state.settings_model.language_menu_open = !state.settings_model.language_menu_open;
+        if (state.settings_model.language_menu_open) {
+            state.settings_model.language_menu_highlight = static_cast<int>(
+                app::LanguageOptionIndex(state.snapshot.language));
+            state.settings_model.language_menu_scroll = std::clamp(
+                state.settings_model.language_menu_highlight - 3,
+                0,
+                static_cast<int>(app::kLanguageOptions.size()) - 8);
+        } else {
+            state.settings_model.language_menu_highlight = -1;
+        }
+        return;
+    }
+    if (IsLanguageSelection(action)) {
+        state.settings_model.language_menu_open = false;
+        state.settings_model.language_menu_highlight = -1;
+        SelectLanguage(state, static_cast<int>(LanguageSelectionIndex(action)));
         return;
     }
     if (action == SettingsAction::CleanupOff || action == SettingsAction::CleanupAi) {
@@ -491,7 +502,7 @@ void Render(
         border);
     DrawText(
         *canvas,
-        LanguageBadge(state.snapshot),
+        LanguageBadgeText(state.snapshot),
         state.language_badge.left() + 9.0F,
         30.5F,
         badge_font,
@@ -508,10 +519,16 @@ void Render(
         canvas->drawLine(chevron_x, 27.0F, chevron_x + 3.0F, 24.0F, chevron);
     }
 
-    state.settings_button = SkRect::MakeXYWH(410.0F, 11.0F, 88.0F, 30.0F);
+    state.settings_button = SkRect::MakeXYWH(398.0F, 11.0F, 88.0F, 30.0F);
     canvas->drawRoundRect(state.settings_button, 7.0F, 7.0F, Fill(kElevated));
     canvas->drawRoundRect(state.settings_button, 7.0F, 7.0F, border);
-    DrawText(*canvas, "Settings", 426.0F, 30.5F, hint_font, kMuted);
+    DrawText(
+        *canvas,
+        "Settings",
+        state.settings_button.centerX() - TextWidth(hint_font, "Settings") * 0.5F,
+        30.5F,
+        hint_font,
+        kMuted);
 
     const float meter_start_x = logical_width - 132.0F;
     for (std::size_t index = 0; index < state.level_history.size(); ++index) {
@@ -625,12 +642,14 @@ void Render(
             9.0F,
             9.0F,
             border);
-        const std::array<std::string_view, 3> labels = {
-            "Automatic detection", "Deutsch", "English"};
-        const int selected = state.snapshot.language == "de" ? 1 :
-            (state.snapshot.language == "en" ? 2 : 0);
-        for (int option = 0; option < 3; ++option) {
-            const SkRect item = LanguageOptionRect(state.snapshot, option);
+        const std::size_t selected = app::LanguageOptionIndex(state.snapshot.language);
+        const int maximum_scroll = static_cast<int>(app::kLanguageOptions.size()) - 8;
+        state.language_menu_scroll = std::clamp(
+            state.language_menu_scroll, 0, maximum_scroll);
+        for (int row = 0; row < 8; ++row) {
+            const std::size_t option = static_cast<std::size_t>(state.language_menu_scroll + row);
+            if (option >= app::kLanguageOptions.size()) break;
+            const SkRect item = LanguageOptionRect(state.snapshot, row);
             if (option == selected) {
                 canvas->drawRoundRect(item, 6.0F, 6.0F, Fill(SkColorSetRGB(42, 39, 66)));
             }
@@ -641,7 +660,7 @@ void Render(
                 Fill(option == selected ? kAccent : kSubtle));
             DrawText(
                 *canvas,
-                labels[static_cast<std::size_t>(option)],
+                app::kLanguageOptions[option].label,
                 item.left() + 27.0F,
                 item.centerY() + 4.5F,
                 menu_font,
@@ -676,13 +695,19 @@ void MouseButtonCallback(GLFWwindow* window, int button, int action, int) {
         }
         if (state->language_badge.contains(static_cast<float>(x), static_cast<float>(y))) {
             state->language_menu_open = !state->language_menu_open;
+            if (state->language_menu_open) {
+                state->language_menu_scroll = std::clamp(
+                    static_cast<int>(app::LanguageOptionIndex(state->snapshot.language)) - 3,
+                    0,
+                    static_cast<int>(app::kLanguageOptions.size()) - 8);
+            }
             return;
         }
         if (state->language_menu_open) {
-            for (int option = 0; option < 3; ++option) {
-                if (LanguageOptionRect(state->snapshot, option).contains(
+            for (int row = 0; row < 8; ++row) {
+                if (LanguageOptionRect(state->snapshot, row).contains(
                         static_cast<float>(x), static_cast<float>(y))) {
-                    SelectLanguage(*state, option);
+                    SelectLanguage(*state, state->language_menu_scroll + row);
                     state->language_menu_open = false;
                     return;
                 }
@@ -734,6 +759,68 @@ void SettingsCloseCallback(GLFWwindow* window) {
     glfwHideWindow(window);
 }
 
+void SettingsScrollCallback(GLFWwindow* window, double, double y_offset) {
+    auto* state = static_cast<WindowState*>(glfwGetWindowUserPointer(window));
+    if (!state || !state->settings_model.language_menu_open || y_offset == 0.0) return;
+    const int maximum = static_cast<int>(app::kLanguageOptions.size()) - 8;
+    state->settings_model.language_menu_scroll = std::clamp(
+        state->settings_model.language_menu_scroll + (y_offset < 0.0 ? 1 : -1),
+        0,
+        maximum);
+    state->settings_model.language_menu_highlight = -1;
+}
+
+void SettingsCursorPositionCallback(GLFWwindow* window, double x, double y) {
+    auto* state = static_cast<WindowState*>(glfwGetWindowUserPointer(window));
+    if (!state) return;
+    state->settings_model.language_select_hovered =
+        state->settings_layout.language_select.contains(
+            static_cast<float>(x), static_cast<float>(y));
+    if (!state->settings_model.language_menu_open) return;
+    state->settings_model.language_menu_highlight = -1;
+    for (std::size_t row = 0; row < state->settings_layout.language_option_count; ++row) {
+        if (state->settings_layout.language_options[row].contains(
+                static_cast<float>(x), static_cast<float>(y))) {
+            state->settings_model.language_menu_highlight = static_cast<int>(
+                state->settings_layout.language_option_indices[row]);
+            break;
+        }
+    }
+}
+
+void SettingsKeyCallback(GLFWwindow* window, int key, int, int action, int) {
+    if (action != GLFW_PRESS && action != GLFW_REPEAT) return;
+    auto* state = static_cast<WindowState*>(glfwGetWindowUserPointer(window));
+    if (!state || !state->settings_model.language_menu_open) return;
+    auto& model = state->settings_model;
+    int option = model.language_menu_highlight;
+    if (option < 0) option = static_cast<int>(
+        app::LanguageOptionIndex(model.settings.language));
+    if (key == GLFW_KEY_UP || key == GLFW_KEY_DOWN ||
+        key == GLFW_KEY_PAGE_UP || key == GLFW_KEY_PAGE_DOWN ||
+        key == GLFW_KEY_HOME || key == GLFW_KEY_END) {
+        if (key == GLFW_KEY_UP) --option;
+        else if (key == GLFW_KEY_DOWN) ++option;
+        else if (key == GLFW_KEY_PAGE_UP) option -= 8;
+        else if (key == GLFW_KEY_PAGE_DOWN) option += 8;
+        else if (key == GLFW_KEY_HOME) option = 0;
+        else option = static_cast<int>(app::kLanguageOptions.size()) - 1;
+        option = std::clamp(
+            option, 0, static_cast<int>(app::kLanguageOptions.size()) - 1);
+        model.language_menu_highlight = option;
+        if (option < model.language_menu_scroll) model.language_menu_scroll = option;
+        if (option >= model.language_menu_scroll + 8) {
+            model.language_menu_scroll = option - 7;
+        }
+    } else if (key == GLFW_KEY_ENTER || key == GLFW_KEY_KP_ENTER) {
+        ApplySettingsAction(*state, LanguageSelectionAction(
+            static_cast<std::size_t>(option)));
+    } else if (key == GLFW_KEY_ESCAPE) {
+        model.language_menu_open = false;
+        model.language_menu_highlight = -1;
+    }
+}
+
 void RenderSettings(
     SkiaSurface& surface,
     WindowState& state,
@@ -776,7 +863,15 @@ void CursorPositionCallback(GLFWwindow* window, double, double) {
 
 void ScrollCallback(GLFWwindow* window, double, double y_offset) {
     auto* state = static_cast<WindowState*>(glfwGetWindowUserPointer(window));
-    if (!state || state->max_scroll_line <= 0) return;
+    if (!state) return;
+    if (state->language_menu_open) {
+        state->language_menu_scroll = std::clamp(
+            state->language_menu_scroll + (y_offset < 0.0 ? 1 : -1),
+            0,
+            static_cast<int>(app::kLanguageOptions.size()) - 8);
+        return;
+    }
+    if (state->max_scroll_line <= 0) return;
     state->scroll_line = std::clamp(
         state->scroll_line - static_cast<int>(std::round(y_offset * 2.0)),
         0,
@@ -885,6 +980,9 @@ int RunDictationWindow(
     glfwSetScrollCallback(window, ScrollCallback);
     glfwSetWindowUserPointer(settings_window, &state);
     glfwSetMouseButtonCallback(settings_window, SettingsMouseButtonCallback);
+    glfwSetScrollCallback(settings_window, SettingsScrollCallback);
+    glfwSetCursorPosCallback(settings_window, SettingsCursorPositionCallback);
+    glfwSetKeyCallback(settings_window, SettingsKeyCallback);
     glfwSetWindowCloseCallback(settings_window, SettingsCloseCallback);
     std::cerr << "DictScribe is ready in the background. Ctrl+Alt+Space toggles dictation; "
                  "Ctrl+Alt+Q quits.\n";
@@ -957,7 +1055,9 @@ int RunDictationWindow(
         }
 
         if (glfwGetWindowAttrib(window, GLFW_VISIBLE)) {
-            const int desired_height = DesiredHeight(state.snapshot, regular);
+            const int desired_height = std::max(
+                DesiredHeight(state.snapshot, regular),
+                state.language_menu_open ? 326 : kMinimumLogicalHeight);
             if (desired_height != state.rendered_height) {
                 state.rendered_height = desired_height;
                 glfwSetWindowSize(window, kLogicalWidth, desired_height);
