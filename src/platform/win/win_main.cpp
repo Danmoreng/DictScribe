@@ -29,6 +29,7 @@ namespace {
 constexpr wchar_t kControlWindowClass[] = L"DictScribeControlWindow";
 constexpr wchar_t kSingleInstanceName[] = L"Local\\DictScribe.Desktop";
 constexpr UINT kTrayMessage = WM_APP + 1;
+constexpr UINT kShowSettingsMessage = WM_APP + 2;
 constexpr UINT_PTR kTickTimer = 1;
 constexpr int kToggleHotkey = 1;
 constexpr int kAcceptHotkey = 2;
@@ -218,6 +219,9 @@ private:
             return 0;
         case WM_COMMAND:
             self->handle_command(LOWORD(w_param));
+            return 0;
+        case kShowSettingsMessage:
+            self->show_settings_now();
             return 0;
         case kTrayMessage:
             if (LOWORD(l_param) == WM_LBUTTONDBLCLK) {
@@ -493,6 +497,18 @@ private:
     }
 
     void show_settings() {
+        // Opening Settings directly from a tray command or the no-activate
+        // overlay races the window that is currently finishing mouse/menu
+        // activation. Defer the actual activation until that dispatch has
+        // returned so Windows does not leave Settings behind another window.
+        if (control_window_ &&
+            PostMessageW(control_window_, kShowSettingsMessage, 0, 0)) {
+            return;
+        }
+        show_settings_now();
+    }
+
+    void show_settings_now() {
         settings_window_.update(settings_view_model(controller_.snapshot()));
         settings_window_.show();
     }

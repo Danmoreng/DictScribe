@@ -420,8 +420,19 @@ void WinSettingsWindow::update(ui::SettingsViewModel model) {
 
 void WinSettingsWindow::show() {
     if (!impl_->hwnd) return;
-    ShowWindow(impl_->hwnd, SW_SHOWNORMAL);
+    ShowWindow(impl_->hwnd, IsIconic(impl_->hwnd) ? SW_RESTORE : SW_SHOW);
+    SetWindowPos(
+        impl_->hwnd,
+        HWND_TOP,
+        0,
+        0,
+        0,
+        0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+    BringWindowToTop(impl_->hwnd);
     SetForegroundWindow(impl_->hwnd);
+    SetActiveWindow(impl_->hwnd);
+    SetFocus(impl_->hwnd);
     InvalidateRect(impl_->hwnd, nullptr, FALSE);
 }
 
