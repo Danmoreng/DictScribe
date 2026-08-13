@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -12,6 +13,7 @@ struct ProtectedTranscript {
     std::vector<std::string> literals;
 };
 
+std::string technical_literal_placeholder(std::size_t index);
 ProtectedTranscript protect_technical_literals(std::string_view transcript);
 bool restore_technical_literals(
     const ProtectedTranscript& protected_transcript,

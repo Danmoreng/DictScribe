@@ -96,22 +96,26 @@ std::vector<std::string> normalized_tokens(std::string_view text) {
     return result;
 }
 
-bool repeats_read_only_suffix(
+bool repeats_read_only_content(
     std::string_view read_only_context,
     std::string_view replacement_tail) {
     const auto context = normalized_tokens(read_only_context);
     const auto output = normalized_tokens(replacement_tail);
-    constexpr std::size_t kMinimumRepeatedTokens = 4;
+    constexpr std::size_t kMinimumRepeatedTokens = 6;
     if (context.size() < kMinimumRepeatedTokens || output.size() < kMinimumRepeatedTokens) {
         return false;
     }
-    const std::size_t maximum = std::min({context.size(), output.size(), std::size_t{16}});
-    for (std::size_t count = maximum; count >= kMinimumRepeatedTokens; --count) {
-        if (std::equal(
-                context.end() - static_cast<std::ptrdiff_t>(count),
-                context.end(),
-                output.begin())) {
-            return true;
+    for (std::size_t context_start = 0;
+         context_start + kMinimumRepeatedTokens <= context.size(); ++context_start) {
+        for (std::size_t output_start = 0;
+             output_start + kMinimumRepeatedTokens <= output.size(); ++output_start) {
+            if (std::equal(
+                    context.begin() + static_cast<std::ptrdiff_t>(context_start),
+                    context.begin() + static_cast<std::ptrdiff_t>(
+                        context_start + kMinimumRepeatedTokens),
+                    output.begin() + static_cast<std::ptrdiff_t>(output_start))) {
+                return true;
+            }
         }
     }
     return false;
@@ -270,7 +274,7 @@ bool validate_replacement_tail(
         error = "rewrite response contains model commentary or a code fence";
         return false;
     }
-    if (repeats_read_only_suffix(input.read_only_context, replacement_tail)) {
+    if (repeats_read_only_content(input.read_only_context, replacement_tail)) {
         error = "rewrite response repeats read-only context";
         return false;
     }

@@ -24,6 +24,12 @@ struct RewriteTailSnapshot {
     std::string new_asr_text;
 };
 
+enum class RewriteCommitResult {
+    Rejected,
+    Accepted,
+    PreservedRaw,
+};
+
 class SemanticTranscript {
 public:
     void reset(std::uint64_t session_generation);
@@ -33,7 +39,10 @@ public:
 
     [[nodiscard]] std::optional<RewriteTailSnapshot> make_rewrite_snapshot() const;
     [[nodiscard]] bool can_commit(const RewriteTailSnapshot& snapshot) const;
-    bool commit(const RewriteTailSnapshot& snapshot, std::string replacement_tail);
+    RewriteCommitResult commit(
+        const RewriteTailSnapshot& snapshot,
+        std::string replacement_tail);
+    bool preserve_raw(const RewriteTailSnapshot& snapshot);
 
     [[nodiscard]] bool has_stable_backlog() const { return !stable_backlog_.empty(); }
     [[nodiscard]] std::string composed_text() const;
@@ -47,6 +56,7 @@ public:
 private:
     void promote_confirmed_prefix();
     void promote_through(std::size_t byte_count);
+    void consume_stable_spans(const RewriteTailSnapshot& snapshot);
     void freeze_old_editable_output();
     [[nodiscard]] std::string read_only_context() const;
 

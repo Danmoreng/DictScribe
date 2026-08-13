@@ -17,11 +17,13 @@ void emit(nlohmann::json message) {
 int main(int argc, char** argv) {
     bool fail_load = false;
     bool fail_rewrite = false;
+    bool truncate_rewrite = false;
     for (int index = 1; index < argc; ++index) {
         if (std::string(argv[index]) == "--model" && index + 1 < argc) {
             const std::string model = argv[++index];
             fail_load = model.find("fail-load") != std::string::npos;
             fail_rewrite = model.find("fail-rewrite") != std::string::npos;
+            truncate_rewrite = model.find("truncate-rewrite") != std::string::npos;
         }
     }
     if (fail_load) {
@@ -55,11 +57,13 @@ int main(int argc, char** argv) {
             }
             std::string replacement = command.value("editableTail", "");
             const std::string incoming = command.value("newAsrText", "");
-            if (!replacement.empty() && !incoming.empty() &&
+            if (truncate_rewrite) {
+                replacement = incoming;
+            } else if (!replacement.empty() && !incoming.empty() &&
                 replacement.back() != ' ' && incoming.front() != ' ') {
                 replacement.push_back(' ');
             }
-            replacement += incoming;
+            if (!truncate_rewrite) replacement += incoming;
             emit({
                 {"v", 2},
                 {"type", "rewrite_tail_completed"},

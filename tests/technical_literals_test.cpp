@@ -8,6 +8,7 @@ int main() {
     const auto protected_text = dictscribe::rewrite::protect_technical_literals(
         "Open README.md and /home/sebastian/file_name.cpp with QVN 3.5-Q8_0.");
     assert(protected_text.literals.size() == 4);
+    assert(protected_text.placeholders.front() == "[[DICTSCRIBELITERAL0]]");
     assert(protected_text.text.find("README.md") == std::string::npos);
     assert(protected_text.text.find("/home/sebastian/file_name.cpp") == std::string::npos);
 

@@ -2,10 +2,11 @@
 
 Status: implementation brief for the next DictScribe development session, 2026-08-13.
 
-Implementation status: Phases 0 through 3 are complete on Windows as of
+Implementation status: Phases 0 through 4 are implemented on Windows as of
 2026-08-13. AI cleanup remains opt-in because the current Q8 quality gate passes
-only 3 of 7 seed cases. Phase 4 structure preservation and target-application
-multiline verification remain next.
+only 3 of 7 seed cases. Phase 4 still needs the documented manual
+target-application matrix before final acceptance. Phase 5 is intentionally
+deferred; DictScribe remains on Q8_0 without a Q4_0 comparison for now.
 
 This document is a companion to and partial revision of
 [`INCREMENTAL_CLEANUP_DESIGN.md`](INCREMENTAL_CLEANUP_DESIGN.md). It keeps the
@@ -876,12 +877,51 @@ model and pinned runtime are compatible.
 
 ### Phase 4: structure preservation
 
+Status: implemented on Windows and Linux; target-application verification is
+pending the manual matrix below.
+
 1. Preserve model newlines end to end.
 2. Freeze editable output at structural boundaries.
 3. Fix Linux preview newline handling.
 4. Verify Windows multiline insertion and fallback behavior.
 
+Implementation notes:
+
+- JSON parsing, semantic composition, and both preview renderers preserve
+  explicit paragraph and list boundaries.
+- The semantic commit boundary rejects truncating follow-up answers. If a
+  model omits most of the previously accepted editable tail, DictScribe keeps
+  that tail and appends the covered stable ASR span raw instead of allowing
+  preview or final insertion to collapse to the newest fragment.
+- Live cleanup dispatches are spaced by at least eight seconds. The semantic
+  editor keeps at most 64 recent tokens and roughly the last two sentences
+  editable; older completed sentences become a read-only context of at most 48
+  tokens. Live requests wait for at least four new stable words. Accepted
+  responses must retain at least 80% of the editable tail and 50% of the new
+  stable ASR tokens, otherwise the raw stable span is preserved.
+- Old editable output is frozen at a nearby blank-line or line boundary before
+  falling back to a token/UTF-8 boundary.
+- Windows uses direct Unicode typing only for single-line text. Multiline text
+  is normalized to Windows CRLF on the clipboard and pasted with `Ctrl+V`.
+  DictScribe never emits physical Enter events for generic multiline output.
+- The inserted multiline result intentionally remains on the clipboard. If
+  automatic paste is rejected, the existing notification asks the user to
+  paste that complete result manually.
+
+Manual Windows target matrix:
+
+| Target | Paragraph/list preserved | No unintended submit/action | Result |
+| --- | --- | --- | --- |
+| Notepad | pending | pending | pending |
+| Browser textarea | pending | pending | pending |
+| VS Code editor | pending | pending | pending |
+| Word or another office editor | pending | pending | pending |
+| ChatGPT input | pending | pending | pending |
+
 ### Phase 5: benchmark Q8_0 and Q4_0
+
+Status: deferred by product decision; continue using Q8_0 and revisit Q4_0
+only after the semantic pipeline work warrants another model benchmark.
 
 1. Run the same corpus and prompt variants against both quantizations.
 2. Measure quality before deciding which quantization becomes the default.

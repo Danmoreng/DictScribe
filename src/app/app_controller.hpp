@@ -35,6 +35,19 @@ enum class DictationMode {
     Error,
 };
 
+struct PipelineDebugSnapshot {
+    std::uint64_t asr_event_count = 0;
+    std::string asr_stage = "Waiting for Nemotron output";
+    std::string nemotron_text;
+    std::string rewrite_request_id;
+    std::string rewrite_request_status = "No rewrite request yet";
+    std::string rewrite_request_json;
+    std::string rewrite_response_request_id;
+    std::string rewrite_response_json;
+    std::string rewrite_decision = "No rewrite response yet";
+    std::string composed_text;
+};
+
 struct AppSnapshot {
     DictationMode mode = DictationMode::Starting;
     CleanupMode cleanup_mode = CleanupMode::Off;
@@ -53,6 +66,7 @@ struct AppSnapshot {
     std::string language = "auto";
     bool asr_use_gpu = false;
     bool rewrite_use_gpu = false;
+    PipelineDebugSnapshot pipeline_debug;
 };
 
 class AppController {
@@ -108,8 +122,10 @@ private:
     bool rewrite_unavailable_ = false;
     bool language_restart_pending_ = false;
     bool rewrite_pending_ = false;
+    bool has_rewrite_dispatch_time_ = false;
     std::chrono::steady_clock::time_point rewrite_pending_since_{};
     std::chrono::steady_clock::time_point rewrite_due_{};
+    std::chrono::steady_clock::time_point last_rewrite_dispatch_{};
     std::string session_id_;
     std::string dictation_id_;
 };

@@ -10,6 +10,7 @@
 #include "app/model_discovery.hpp"
 #include "app/settings.hpp"
 #include "platform/win/win_overlay.hpp"
+#include "platform/win/win_pipeline_debug_window.hpp"
 #include "platform/win/win_settings_window.hpp"
 #include "platform/win/win_text_injector.hpp"
 
@@ -32,6 +33,7 @@ constexpr int kAcceptHotkey = 2;
 constexpr int kCancelHotkey = 3;
 constexpr UINT kCommandToggle = 100;
 constexpr UINT kCommandSettings = 101;
+constexpr UINT kCommandPipelineDebug = 102;
 constexpr UINT kCommandLanguageAuto = 110;
 constexpr UINT kCommandLanguageGerman = 111;
 constexpr UINT kCommandLanguageEnglish = 112;
@@ -120,6 +122,10 @@ public:
         }
         settings_window_.set_action_handler(
             [this](ui::SettingsAction action) { apply_settings_action(action); });
+        if (!pipeline_debug_window_.create(instance, error)) {
+            MessageBoxA(nullptr, error.c_str(), "DictScribe", MB_ICONERROR | MB_OK);
+            return false;
+        }
 
         WNDCLASSEXW window_class{};
         window_class.cbSize = sizeof(window_class);
@@ -276,6 +282,7 @@ private:
         }
         overlay_.update(snapshot, notice_);
         settings_window_.update(settings_view_model(snapshot));
+        pipeline_debug_window_.update(snapshot.pipeline_debug);
 
         const bool smoke_ready = snapshot.mode == app::DictationMode::Ready &&
             (snapshot.cleanup_mode == app::CleanupMode::Off || snapshot.rewrite_ready);
@@ -391,6 +398,7 @@ private:
         AppendMenuW(menu, MF_STRING, kCommandToggle, ToggleMenuLabel(snapshot.mode));
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, MF_STRING, kCommandSettings, L"Settings...");
+        AppendMenuW(menu, MF_STRING, kCommandPipelineDebug, L"Pipeline debugger...");
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(
             menu,
@@ -424,6 +432,10 @@ private:
             break;
         case kCommandSettings:
             show_settings();
+            break;
+        case kCommandPipelineDebug:
+            pipeline_debug_window_.update(controller_.snapshot().pipeline_debug);
+            pipeline_debug_window_.show();
             break;
         case kCommandLanguageAuto:
             select_language("auto");
@@ -543,6 +555,7 @@ private:
     app::AppController controller_;
     WinOverlay overlay_;
     WinSettingsWindow settings_window_;
+    WinPipelineDebugWindow pipeline_debug_window_;
 };
 
 } // namespace dictscribe::win

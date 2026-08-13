@@ -1,5 +1,6 @@
 #include "app/semantic_transcript.hpp"
 
+#include <cctype>
 #include <iostream>
 #include <string>
 
@@ -13,6 +14,7 @@
 
 int main() {
     using dictscribe::app::SemanticTranscript;
+    using dictscribe::app::RewriteCommitResult;
 
     SemanticTranscript transcript;
     transcript.reset(7);
@@ -35,7 +37,8 @@ int main() {
     transcript.update_asr_hypothesis(
         "one two three four five six seven eight nine ten revised");
     CHECK(transcript.can_commit(*first));
-    CHECK(transcript.commit(*first, "One, two, three, four."));
+    CHECK(transcript.commit(*first, "One, two, three, four.") ==
+        RewriteCommitResult::Accepted);
     CHECK(transcript.composed_text().find("revised") != std::string::npos);
 
     transcript.finalize_asr_hypothesis(
@@ -82,6 +85,111 @@ int main() {
     for (char value : bounded_request->new_asr_text) spaces += value == ' ';
     CHECK(spaces <= 128);
     CHECK(bounded_request->new_asr_text.size() < long_text.size());
+
+    std::string structured_tail;
+    for (int index = 0; index < 20; ++index) {
+        if (!structured_tail.empty()) structured_tail.push_back(' ');
+        structured_tail += "lead" + std::to_string(index);
+    }
+    structured_tail += "\n\n";
+    for (int index = 0; index < 80; ++index) {
+        if (index != 0) structured_tail.push_back(' ');
+        structured_tail += "tail" + std::to_string(index);
+    }
+
+    SemanticTranscript structured;
+    structured.reset(11);
+    structured.begin_asr_segment();
+    structured.finalize_asr_hypothesis(structured_tail);
+    const auto structure_request = structured.make_rewrite_snapshot();
+    CHECK(structure_request.has_value());
+    CHECK(structured.commit(*structure_request, structured_tail) ==
+        RewriteCommitResult::Accepted);
+    CHECK(structured.composed_text() == structured_tail);
+
+    structured.begin_asr_segment();
+    structured.finalize_asr_hypothesis("continued structure");
+    const auto continued_structure = structured.make_rewrite_snapshot();
+    CHECK(continued_structure.has_value());
+    CHECK(continued_structure->read_only_context.ends_with("lead19\n\n"));
+    CHECK(continued_structure->editable_tail.starts_with("tail0 "));
+    CHECK(continued_structure->editable_tail.find('\n') == std::string::npos);
+
+    SemanticTranscript bounded_context;
+    bounded_context.reset(14);
+    bounded_context.begin_asr_segment();
+    std::string context_source;
+    for (int index = 0; index < 120; ++index) {
+        if (!context_source.empty()) context_source.push_back(' ');
+        context_source += "context" + std::to_string(index);
+    }
+    bounded_context.finalize_asr_hypothesis(context_source);
+    const auto context_source_request = bounded_context.make_rewrite_snapshot();
+    CHECK(context_source_request.has_value());
+    CHECK(bounded_context.commit(*context_source_request, context_source) ==
+        RewriteCommitResult::Accepted);
+    bounded_context.begin_asr_segment();
+    bounded_context.finalize_asr_hypothesis("new dictated tail");
+    const auto bounded_context_request = bounded_context.make_rewrite_snapshot();
+    CHECK(bounded_context_request.has_value());
+    std::size_t context_words = 0;
+    bool in_context_word = false;
+    for (const unsigned char value : bounded_context_request->read_only_context) {
+        const bool whitespace = std::isspace(value) != 0;
+        if (!whitespace && !in_context_word) ++context_words;
+        in_context_word = !whitespace;
+    }
+    CHECK(context_words == 48);
+
+    SemanticTranscript truncated_response;
+    truncated_response.reset(12);
+    truncated_response.begin_asr_segment();
+    truncated_response.finalize_asr_hypothesis(
+        "The first accepted passage contains enough words to remain visible.");
+    const auto initial_passage = truncated_response.make_rewrite_snapshot();
+    CHECK(initial_passage.has_value());
+    CHECK(truncated_response.commit(
+        *initial_passage,
+        "The first accepted passage contains enough words to remain visible.") ==
+        RewriteCommitResult::Accepted);
+    truncated_response.begin_asr_segment();
+    truncated_response.finalize_asr_hypothesis("This is the newest fragment.");
+    const auto next_passage = truncated_response.make_rewrite_snapshot();
+    CHECK(next_passage.has_value());
+    CHECK(truncated_response.commit(*next_passage, "Only the newest fragment.") ==
+        RewriteCommitResult::PreservedRaw);
+    CHECK(truncated_response.composed_text() ==
+        "The first accepted passage contains enough words to remain visible. "
+        "This is the newest fragment.");
+
+    SemanticTranscript repeated_context;
+    repeated_context.reset(13);
+    repeated_context.begin_asr_segment();
+    const std::string initial_sentences =
+        "Sentence one remains immutable. Sentence two also remains immutable. "
+        "Sentence three is still editable. Sentence four is still editable.";
+    repeated_context.finalize_asr_hypothesis(initial_sentences);
+    const auto initial_context = repeated_context.make_rewrite_snapshot();
+    CHECK(initial_context.has_value());
+    CHECK(repeated_context.commit(*initial_context, initial_sentences) ==
+        RewriteCommitResult::Accepted);
+    repeated_context.begin_asr_segment();
+    repeated_context.finalize_asr_hypothesis("Sentence five is newly recognized.");
+    const auto context_repetition = repeated_context.make_rewrite_snapshot();
+    CHECK(context_repetition.has_value());
+    CHECK(!context_repetition->read_only_context.empty());
+    const std::string repeated_candidate =
+        context_repetition->editable_tail + " " +
+        context_repetition->read_only_context + " " +
+        context_repetition->new_asr_text;
+    CHECK(repeated_context.commit(*context_repetition, repeated_candidate) ==
+        RewriteCommitResult::PreservedRaw);
+    const std::string repetition_result = repeated_context.composed_text();
+    const std::size_t first_sentence = repetition_result.find(
+        "Sentence one remains immutable.");
+    CHECK(first_sentence != std::string::npos);
+    CHECK(repetition_result.find(
+        "Sentence one remains immutable.", first_sentence + 1) == std::string::npos);
 
     std::cout << "Semantic transcript tests passed\n";
     return 0;

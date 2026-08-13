@@ -228,10 +228,36 @@ int RunParentTest() {
         std::cerr << insertion_error << '\n';
         return 1;
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
 
-    const std::wstring inserted = ReadEditText(GetDlgItem(target_window, 1));
+    HWND edit = GetDlgItem(target_window, 1);
+    const std::wstring inserted = ReadEditText(edit);
     const std::wstring clipboard = ReadClipboardText();
+    if (inserted != L"Unicode input: äöü ß ✓") {
+        CloseTarget(process, target_window);
+        std::wcerr << L"Unexpected inserted text: " << inserted << L'\n';
+        return 1;
+    }
+    if (clipboard != L"clipboard sentinel") {
+        CloseTarget(process, target_window);
+        std::wcerr << L"Single-line insertion changed the clipboard.\n";
+        return 1;
+    }
+
+    SendMessageW(edit, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(L""));
+    SetFocus(edit);
+    constexpr std::string_view multiline =
+        "Shopping list:\n\n- Bread\n- Müsli\n- Milk";
+    insertion_error.clear();
+    if (!dictscribe::win::InsertText(captured, multiline, insertion_error)) {
+        CloseTarget(process, target_window);
+        std::cerr << insertion_error << '\n';
+        return 1;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    const std::wstring inserted_multiline = ReadEditText(edit);
+    const std::wstring clipboard_multiline = ReadClipboardText();
+
     HWND own_window = CreateWindowExW(
         0, L"STATIC", L"", WS_POPUP, 0, 0, 1, 1, nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     dictscribe::win::TargetContext own_target;
@@ -241,12 +267,14 @@ int RunParentTest() {
     DestroyWindow(own_window);
     CloseTarget(process, target_window);
 
-    if (inserted != L"Unicode input: äöü ß ✓") {
-        std::wcerr << L"Unexpected inserted text: " << inserted << L'\n';
+    constexpr std::wstring_view expected_multiline =
+        L"Shopping list:\r\n\r\n- Bread\r\n- Müsli\r\n- Milk";
+    if (inserted_multiline != expected_multiline) {
+        std::wcerr << L"Unexpected multiline text: " << inserted_multiline << L'\n';
         return 1;
     }
-    if (clipboard != L"clipboard sentinel") {
-        std::wcerr << L"Direct insertion changed the clipboard.\n";
+    if (clipboard_multiline != expected_multiline) {
+        std::wcerr << L"Multiline clipboard content was not preserved.\n";
         return 1;
     }
     if (accepted_own_window) {
@@ -254,7 +282,7 @@ int RunParentTest() {
         return 1;
     }
 
-    std::cout << "Windows target capture and Unicode insertion tests passed.\n";
+    std::cout << "Windows Unicode typing and safe multiline paste tests passed.\n";
     return 0;
 }
 

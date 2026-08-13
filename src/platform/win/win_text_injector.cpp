@@ -1,7 +1,9 @@
 #include "platform/win/win_text_injector.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <iterator>
 #include <limits>
 #include <system_error>
 #include <thread>
@@ -96,6 +98,27 @@ bool SetClipboardText(std::wstring_view text, std::string& error) {
     return true;
 }
 
+std::wstring NormalizeClipboardNewlines(std::wstring_view text) {
+    std::wstring result;
+    result.reserve(text.size());
+    for (std::size_t index = 0; index < text.size(); ++index) {
+        const wchar_t character = text[index];
+        if (character == L'\r') {
+            result.append(L"\r\n");
+            if (index + 1 < text.size() && text[index + 1] == L'\n') ++index;
+        } else if (character == L'\n') {
+            result.append(L"\r\n");
+        } else {
+            result.push_back(character);
+        }
+    }
+    return result;
+}
+
+bool ContainsLineBreak(std::string_view text) {
+    return text.find_first_of("\r\n") != std::string_view::npos;
+}
+
 bool IsExternalTargetWindow(HWND window, HWND overlay_window, HWND control_window) {
     if (!window || !IsWindow(window) || window == overlay_window || window == control_window ||
         window == GetDesktopWindow() || window == GetShellWindow()) {
@@ -142,6 +165,48 @@ bool SendUnicodeText(std::wstring_view text, std::string& error) {
     return true;
 }
 
+bool WaitForPasteModifiersReleased() {
+    constexpr int kModifierKeys[] = {
+        VK_CONTROL, VK_SHIFT, VK_MENU, VK_LWIN, VK_RWIN,
+    };
+    for (int attempt = 0; attempt < 30; ++attempt) {
+        const bool released = std::all_of(
+            std::begin(kModifierKeys),
+            std::end(kModifierKeys),
+            [](int key) { return (GetAsyncKeyState(key) & 0x8000) == 0; });
+        if (released) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return false;
+}
+
+bool SendClipboardPaste(std::string& error) {
+    if (!WaitForPasteModifiersReleased()) {
+        error = "A modifier key is still held. The text remains on the clipboard for manual paste.";
+        return false;
+    }
+
+    INPUT inputs[4]{};
+    inputs[0].type = INPUT_KEYBOARD;
+    inputs[0].ki.wVk = VK_CONTROL;
+    inputs[1].type = INPUT_KEYBOARD;
+    inputs[1].ki.wVk = 'V';
+    inputs[2] = inputs[1];
+    inputs[2].ki.dwFlags = KEYEVENTF_KEYUP;
+    inputs[3] = inputs[0];
+    inputs[3].ki.dwFlags = KEYEVENTF_KEYUP;
+
+    const UINT sent = SendInput(static_cast<UINT>(std::size(inputs)), inputs, sizeof(INPUT));
+    if (sent != static_cast<UINT>(std::size(inputs))) {
+        const DWORD code = GetLastError();
+        error = code == ERROR_SUCCESS
+            ? "Windows did not accept the multiline paste shortcut."
+            : WindowsError("Windows did not accept the multiline paste shortcut", code);
+        return false;
+    }
+    return true;
+}
+
 } // namespace
 
 TargetContext CaptureTargetContext(HWND overlay_window, HWND control_window) {
@@ -183,7 +248,7 @@ bool PutTextOnClipboard(std::string_view text, std::string& error) {
         error = "Could not convert the dictated text to UTF-16.";
         return false;
     }
-    return SetClipboardText(wide, error);
+    return SetClipboardText(NormalizeClipboardNewlines(wide), error);
 }
 
 bool InsertText(const TargetContext& target, std::string_view text, std::string& error) {
@@ -213,7 +278,14 @@ bool InsertText(const TargetContext& target, std::string_view text, std::string&
         error = "Could not convert the dictated text to UTF-16.";
         return false;
     }
-    return SendUnicodeText(wide, error);
+    if (!ContainsLineBreak(text)) return SendUnicodeText(wide, error);
+
+    // A physical Enter can submit a form or send a chat message. Keep multiline
+    // insertion application-neutral by putting the complete result on the
+    // clipboard and issuing only Ctrl+V. The dictated text intentionally remains
+    // on the clipboard, which also provides a recoverable manual-paste fallback.
+    if (!SetClipboardText(NormalizeClipboardNewlines(wide), error)) return false;
+    return SendClipboardPaste(error);
 }
 
 } // namespace dictscribe::win

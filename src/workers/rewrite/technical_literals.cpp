@@ -8,7 +8,7 @@ namespace dictscribe::rewrite {
 
 namespace {
 
-constexpr std::string_view kPlaceholderPrefix = "__DICTSCRIBE_LITERAL_";
+constexpr std::string_view kPlaceholderPrefix = "[[DICTSCRIBELITERAL";
 
 bool is_edge_punctuation(char value) {
     switch (value) {
@@ -67,6 +67,10 @@ bool is_technical_literal(std::string_view token) {
 
 } // namespace
 
+std::string technical_literal_placeholder(std::size_t index) {
+    return std::string(kPlaceholderPrefix) + std::to_string(index) + "]]";
+}
+
 ProtectedTranscript protect_technical_literals(std::string_view transcript) {
     ProtectedTranscript result;
     result.text.reserve(transcript.size());
@@ -100,8 +104,8 @@ ProtectedTranscript protect_technical_literals(std::string_view transcript) {
             continue;
         }
 
-        const std::string placeholder = std::string(kPlaceholderPrefix) +
-            std::to_string(result.literals.size()) + "__";
+        const std::string placeholder =
+            technical_literal_placeholder(result.literals.size());
         result.text.append(transcript.substr(token_begin, core_begin - token_begin));
         result.text.append(placeholder);
         result.text.append(transcript.substr(core_end, token_end - core_end));
@@ -139,8 +143,8 @@ bool restore_technical_literals(
                 protected_transcript.literals.begin(),
                 protected_transcript.literals.end(),
                 literal) == protected_transcript.literals.end()) {
+            error = "rewrite introduced a new technical literal: " + literal;
             output.clear();
-            error = "rewrite introduced a new technical literal";
             return false;
         }
     }

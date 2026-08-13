@@ -77,6 +77,10 @@ int main() {
         error));
     assert(!validate_replacement_tail(
         list_input,
+        "New text first. We agreed on the following implementation plan. Load the model.",
+        error));
+    assert(!validate_replacement_tail(
+        list_input,
         "```text\nLoad the model.\n```",
         error));
 

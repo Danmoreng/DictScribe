@@ -132,7 +132,7 @@ def main() -> int:
             "--model",
             str(args.model),
             "--protocol-version",
-            "1",
+            "2",
             "--context-size",
             "2048",
         ],

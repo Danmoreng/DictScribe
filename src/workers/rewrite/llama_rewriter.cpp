@@ -38,7 +38,7 @@ Example output:
 Return only the required JSON object.)";
 
 constexpr unsigned kDefaultCpuThreads = 4;
-constexpr auto kMaximumGenerationTime = std::chrono::seconds(5);
+constexpr auto kMaximumGenerationTime = std::chrono::seconds(10);
 constexpr std::string_view kThinkingStart = "<think>";
 constexpr std::string_view kThinkingEnd = "</think>";
 constexpr std::string_view kNonThinkingAssistantPrefix = "<think>\n\n</think>\n\n";
@@ -80,8 +80,8 @@ std::string protect_tail_field(
     auto part = protect_technical_literals(source);
     const std::size_t offset = combined.placeholders.size();
     for (std::size_t index = 0; index < part.placeholders.size(); ++index) {
-        const std::string replacement = "__DICTSCRIBE_LITERAL_" +
-            std::to_string(offset + index) + "__";
+        const std::string replacement =
+            technical_literal_placeholder(offset + index);
         replace_all(part.text, part.placeholders[index], replacement);
         combined.placeholders.push_back(replacement);
         combined.literals.push_back(part.literals[index]);

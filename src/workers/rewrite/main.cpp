@@ -225,9 +225,11 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (!stdio || model_path.empty() || protocol_version != dictscribe::protocol::kVersion) {
+    if (!stdio || model_path.empty() ||
+        (protocol_version != dictscribe::protocol::kVersion &&
+         protocol_version != dictscribe::protocol::kRewriteTailVersion)) {
         std::cerr << "Usage: dictscribe-rewrite-worker --stdio --model MODEL.gguf "
-                     "--protocol-version 1 [--gpu-layers N] [--context-size N]\n";
+                     "--protocol-version 1|2 [--gpu-layers N] [--context-size N]\n";
         return 2;
     }
 

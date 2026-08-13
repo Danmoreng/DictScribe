@@ -13,7 +13,7 @@ using namespace std::chrono_literals;
 dictscribe::app::AppSnapshot wait_until(
     dictscribe::app::AppController& controller,
     const std::function<bool(const dictscribe::app::AppSnapshot&)>& predicate,
-    std::chrono::milliseconds timeout = 5s) {
+    std::chrono::milliseconds timeout = 10s) {
     const auto deadline = std::chrono::steady_clock::now() + timeout;
     do {
         controller.tick();
@@ -21,6 +21,12 @@ dictscribe::app::AppSnapshot wait_until(
         if (predicate(state)) return state;
         std::this_thread::sleep_for(20ms);
     } while (std::chrono::steady_clock::now() < deadline);
+    const auto state = controller.snapshot();
+    std::cerr << "Controller timeout: mode=" << static_cast<int>(state.mode)
+              << " status=" << state.status
+              << " error=" << state.error
+              << " requestStatus=" << state.pipeline_debug.rewrite_request_status
+              << " decision=" << state.pipeline_debug.rewrite_decision << '\n';
     assert(false && "controller state timed out");
     return {};
 }
@@ -57,6 +63,11 @@ int main() {
             state.live_text.find("llama_rewriter.cpp weiter 1") != std::string::npos;
     });
     assert(!raw_recording.rewrite_in_progress);
+    assert(raw_recording.pipeline_debug.asr_event_count >= 1);
+    assert(raw_recording.pipeline_debug.asr_stage == "Nemotron partial hypothesis");
+    assert(raw_recording.pipeline_debug.nemotron_text.find(
+        "llama_rewriter.cpp weiter 1") != std::string::npos);
+    assert(raw_recording.pipeline_debug.rewrite_request_json.empty());
     raw_controller.toggle_recording();
     const auto raw_complete = wait_until(raw_controller, [](const auto& state) {
         return state.mode == DictationMode::Complete;
@@ -86,6 +97,18 @@ int main() {
         return state.mode == DictationMode::Recording && state.rewrite_in_progress;
     });
     assert(cleaning.audio_rms > 0.17F && cleaning.audio_peak > 0.71F);
+    assert(cleaning.pipeline_debug.rewrite_request_json.find(
+        "\"readOnlyContext\"") != std::string::npos);
+    assert(cleaning.pipeline_debug.rewrite_request_json.find(
+        "\"editableTail\"") != std::string::npos);
+    assert(cleaning.pipeline_debug.rewrite_request_json.find(
+        "\"newAsrText\"") != std::string::npos);
+    assert(cleaning.pipeline_debug.rewrite_request_status.find(
+        "1200 ms quiet debounce") != std::string::npos);
+    assert(cleaning.pipeline_debug.rewrite_request_status.find(
+        "minimum 8000 ms") != std::string::npos);
+    assert(cleaning.pipeline_debug.rewrite_request_status.find(
+        "newAsrText contains") != std::string::npos);
     const auto stop_started = std::chrono::steady_clock::now();
     raw_controller.toggle_recording();
     const auto cleaned_complete = wait_until(raw_controller, [](const auto& state) {
@@ -143,6 +166,45 @@ int main() {
         return state.mode == DictationMode::Complete;
     });
     assert(failed_complete.rewritten_text.find("weiter final 1") != std::string::npos);
+
+    auto truncating_config = config(CleanupMode::Ai);
+    truncating_config.rewrite_model = "truncate-rewrite.gguf";
+    dictscribe::app::AppController truncating_controller;
+    assert(truncating_controller.start(truncating_config));
+    wait_until(truncating_controller, [](const auto& state) {
+        return state.mode == DictationMode::Ready && state.rewrite_ready;
+    });
+    truncating_controller.toggle_recording();
+    wait_until(truncating_controller, [](const auto& state) {
+        return state.mode == DictationMode::Recording &&
+            !state.rewrite_in_progress &&
+            !state.pipeline_debug.rewrite_response_request_id.empty() &&
+            state.pipeline_debug.rewrite_decision.find("Accepted") != std::string::npos &&
+            state.live_text.find("Ich teste die lokale Spracherkennung") != std::string::npos;
+    });
+    truncating_controller.set_language("en");
+    const auto preserved_preview = wait_until(truncating_controller, [](const auto& state) {
+        return state.mode == DictationMode::Recording &&
+            state.error.find("incomplete tail") != std::string::npos &&
+            state.live_text.find("Ich teste die lokale Spracherkennung") != std::string::npos &&
+            state.live_text.find("I am testing the local speech") != std::string::npos;
+    });
+    assert(preserved_preview.rewritten_text == preserved_preview.live_text);
+    assert(preserved_preview.pipeline_debug.rewrite_response_json.find(
+        "\"replacementTail\"") != std::string::npos);
+    assert(!preserved_preview.pipeline_debug.rewrite_response_request_id.empty());
+    assert(preserved_preview.pipeline_debug.rewrite_decision.find(
+        "Preserved raw") != std::string::npos);
+    assert(preserved_preview.pipeline_debug.composed_text ==
+        preserved_preview.live_text);
+    truncating_controller.toggle_recording();
+    const auto preserved_complete = wait_until(truncating_controller, [](const auto& state) {
+        return state.mode == DictationMode::Complete;
+    });
+    assert(preserved_complete.rewritten_text.find(
+        "Ich teste die lokale Spracherkennung") != std::string::npos);
+    assert(preserved_complete.rewritten_text.find(
+        "I am testing the local speech") != std::string::npos);
 
     auto load_failure_config = config(CleanupMode::Ai);
     load_failure_config.rewrite_model = "fail-load-rewrite.gguf";

@@ -135,9 +135,11 @@ if(DICTSCRIBE_BUILD_UI)
         add_executable(dictscribe WIN32
             src/platform/win/win_main.cpp
             src/platform/win/win_overlay.cpp
+            src/platform/win/win_pipeline_debug_window.cpp
             src/platform/win/win_settings_window.cpp
             src/platform/win/win_text_injector.cpp
             src/ui/settings_view.cpp
+            src/ui/text_layout.cpp
             src/protocol/jsonl_protocol.cpp
             src/app/app_controller.cpp
             src/app/semantic_transcript.cpp

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <map>
 #include <string_view>
 
 namespace dictscribe::app {
@@ -10,8 +11,8 @@ namespace {
 
 constexpr std::size_t kMinimumHypothesesForPromotion = 3;
 constexpr std::size_t kProtectedTrailingTokens = 5;
-constexpr std::size_t kReadOnlyContextTokens = 96;
-constexpr std::size_t kEditableTailTokens = 192;
+constexpr std::size_t kReadOnlyContextTokens = 48;
+constexpr std::size_t kEditableTailTokens = 64;
 constexpr std::size_t kNewAsrTokensPerRequest = 128;
 constexpr std::size_t kMaximumReadOnlyBytes = 2 * 1024;
 constexpr std::size_t kMaximumEditableBytes = 4 * 1024;
@@ -117,6 +118,94 @@ std::string AppendText(std::string prefix, std::string_view suffix) {
     return prefix;
 }
 
+std::vector<std::string> NormalizedContentTokens(std::string_view text) {
+    std::vector<std::string> result;
+    for (const auto& token : TokenBoundaries(text)) {
+        std::size_t begin = token.begin;
+        std::size_t end = token.end_with_space;
+        while (end > begin &&
+               std::isspace(static_cast<unsigned char>(text[end - 1])) != 0) {
+            --end;
+        }
+        while (begin < end && static_cast<unsigned char>(text[begin]) < 0x80U &&
+               std::ispunct(static_cast<unsigned char>(text[begin])) != 0) {
+            ++begin;
+        }
+        while (end > begin && static_cast<unsigned char>(text[end - 1]) < 0x80U &&
+               std::ispunct(static_cast<unsigned char>(text[end - 1])) != 0) {
+            --end;
+        }
+        if (begin == end) continue;
+        std::string normalized(text.substr(begin, end - begin));
+        std::transform(normalized.begin(), normalized.end(), normalized.begin(),
+            [](unsigned char value) {
+                return value < 0x80U
+                    ? static_cast<char>(std::tolower(value))
+                    : static_cast<char>(value);
+            });
+        result.push_back(std::move(normalized));
+    }
+    return result;
+}
+
+std::size_t RetainedTokenCount(
+    const std::vector<std::string>& expected,
+    std::string_view replacement_tail) {
+    std::map<std::string, std::size_t> available;
+    for (const auto& token : NormalizedContentTokens(replacement_tail)) {
+        ++available[token];
+    }
+    std::size_t retained = 0;
+    for (const auto& token : expected) {
+        auto match = available.find(token);
+        if (match == available.end() || match->second == 0) continue;
+        --match->second;
+        ++retained;
+    }
+
+    return retained;
+}
+
+bool PreservesRequiredContent(
+    std::string_view editable_tail,
+    std::string_view new_asr_text,
+    std::string_view replacement_tail) {
+    const auto editable = NormalizedContentTokens(editable_tail);
+    const auto incoming = NormalizedContentTokens(new_asr_text);
+    const std::size_t retained_editable = RetainedTokenCount(editable, replacement_tail);
+    const std::size_t retained_incoming = RetainedTokenCount(incoming, replacement_tail);
+
+    // An already accepted tail should only receive local edits. The lower
+    // threshold for new ASR allows spoken formatting commands and abandoned
+    // wording to disappear, while still rejecting a severely truncated result.
+    const std::size_t required_editable = (editable.size() * 4 + 4) / 5;
+    const std::size_t required_incoming = (incoming.size() + 1) / 2;
+    return retained_editable >= required_editable &&
+        retained_incoming >= required_incoming;
+}
+
+bool RepeatsReadOnlyContent(
+    std::string_view read_only_context,
+    std::string_view replacement_tail) {
+    const auto context = NormalizedContentTokens(read_only_context);
+    const auto replacement = NormalizedContentTokens(replacement_tail);
+    constexpr std::size_t kRepeatedRun = 6;
+    if (context.size() < kRepeatedRun || replacement.size() < kRepeatedRun) return false;
+    for (std::size_t context_start = 0;
+         context_start + kRepeatedRun <= context.size(); ++context_start) {
+        for (std::size_t replacement_start = 0;
+             replacement_start + kRepeatedRun <= replacement.size(); ++replacement_start) {
+            if (std::equal(
+                    context.begin() + static_cast<std::ptrdiff_t>(context_start),
+                    context.begin() + static_cast<std::ptrdiff_t>(context_start + kRepeatedRun),
+                    replacement.begin() + static_cast<std::ptrdiff_t>(replacement_start))) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 std::string SuffixByTokens(
     std::string_view text,
     std::size_t maximum_tokens,
@@ -139,8 +228,26 @@ std::size_t EditableSuffixStart(std::string_view text, std::size_t maximum_token
     const auto tokens = TokenBoundaries(text);
     const std::size_t token_start = tokens.size() <= maximum_tokens
         ? 0 : tokens[tokens.size() - maximum_tokens].begin;
-    std::size_t start = std::max(
-        token_start, Utf8SafeSuffixStart(text, kMaximumEditableBytes));
+    std::size_t sentence_start = 0;
+    std::vector<std::size_t> sentence_starts;
+    for (std::size_t index = 0; index + 1 < text.size(); ++index) {
+        if (text[index] != '.' && text[index] != '!' && text[index] != '?') continue;
+        std::size_t next = index + 1;
+        if (std::isspace(static_cast<unsigned char>(text[next])) == 0) continue;
+        while (next < text.size() &&
+               std::isspace(static_cast<unsigned char>(text[next])) != 0) {
+            ++next;
+        }
+        if (next < text.size()) sentence_starts.push_back(next);
+    }
+    if (sentence_starts.size() >= 2) {
+        sentence_start = sentence_starts[sentence_starts.size() - 2];
+    }
+
+    std::size_t start = std::max({
+        token_start,
+        Utf8SafeSuffixStart(text, kMaximumEditableBytes),
+        sentence_start});
     if (start == 0) return 0;
 
     const std::size_t blank_line = text.rfind("\n\n", start);
@@ -285,19 +392,39 @@ bool SemanticTranscript::can_commit(const RewriteTailSnapshot& snapshot) const {
     return false;
 }
 
-bool SemanticTranscript::commit(
+RewriteCommitResult SemanticTranscript::commit(
     const RewriteTailSnapshot& snapshot,
     std::string replacement_tail) {
-    if (!can_commit(snapshot) || replacement_tail.empty()) return false;
-    editable_output_ = std::move(replacement_tail);
+    if (!can_commit(snapshot) || replacement_tail.empty()) {
+        return RewriteCommitResult::Rejected;
+    }
+    const bool accepted = PreservesRequiredContent(
+        editable_output_, snapshot.new_asr_text, replacement_tail) &&
+        !RepeatsReadOnlyContent(snapshot.read_only_context, replacement_tail);
+    editable_output_ = accepted
+        ? std::move(replacement_tail)
+        : AppendText(std::move(editable_output_), snapshot.new_asr_text);
+    consume_stable_spans(snapshot);
+    ++tail_revision_;
+    freeze_old_editable_output();
+    return accepted ? RewriteCommitResult::Accepted : RewriteCommitResult::PreservedRaw;
+}
+
+bool SemanticTranscript::preserve_raw(const RewriteTailSnapshot& snapshot) {
+    if (!can_commit(snapshot)) return false;
+    editable_output_ = AppendText(std::move(editable_output_), snapshot.new_asr_text);
+    consume_stable_spans(snapshot);
+    ++tail_revision_;
+    freeze_old_editable_output();
+    return true;
+}
+
+void SemanticTranscript::consume_stable_spans(const RewriteTailSnapshot& snapshot) {
     while (!stable_backlog_.empty()) {
         const std::uint64_t id = stable_backlog_.front().id;
         stable_backlog_.pop_front();
         if (id == snapshot.last_stable_span_id) break;
     }
-    ++tail_revision_;
-    freeze_old_editable_output();
-    return true;
 }
 
 void SemanticTranscript::freeze_old_editable_output() {

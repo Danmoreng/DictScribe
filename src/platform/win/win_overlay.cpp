@@ -1,5 +1,7 @@
 #include "platform/win/win_overlay.hpp"
 
+#include "ui/text_layout.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -127,9 +129,7 @@ std::vector<std::string> WrapText(
     const SkFont& font,
     float max_width) {
     std::vector<std::string> lines;
-    std::istringstream paragraphs(text);
-    std::string paragraph;
-    while (std::getline(paragraphs, paragraph)) {
+    for (const std::string& paragraph : dictscribe::ui::SplitExplicitLines(text)) {
         if (paragraph.empty()) {
             lines.emplace_back();
             continue;
