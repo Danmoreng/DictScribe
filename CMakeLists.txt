@@ -48,6 +48,16 @@ add_executable(dictscribe-technical-literal-tests
 target_include_directories(dictscribe-technical-literal-tests PRIVATE src)
 add_test(NAME dictscribe_technical_literals COMMAND dictscribe-technical-literal-tests)
 
+add_executable(dictscribe-rewrite-tail-contract-tests
+    tests/rewrite_tail_contract_test.cpp
+    src/workers/rewrite/rewrite_tail_contract.cpp
+)
+target_include_directories(dictscribe-rewrite-tail-contract-tests PRIVATE
+    src
+    third_party/nlohmann-json/single_include
+)
+add_test(NAME dictscribe_rewrite_tail_contract COMMAND dictscribe-rewrite-tail-contract-tests)
+
 add_executable(dictscribe-text-layout-tests
     tests/text_layout_test.cpp
     src/ui/text_layout.cpp

@@ -27,9 +27,13 @@ int main() {
     assert(failure.at("id") == "request-1");
     assert(failure.at("sessionId") == "session-1");
 
+    const auto rewrite_tail = dictscribe::protocol::parse(
+        R"({"v":2,"type":"rewrite_tail","id":"two"})");
+    assert(rewrite_tail.at("v") == 2);
+
     expect_parse_failure("");
     expect_parse_failure("[]");
-    expect_parse_failure(R"({"v":2,"type":"ping"})");
+    expect_parse_failure(R"({"v":3,"type":"ping"})");
     expect_parse_failure(R"({"v":1,"type":""})");
 
     std::cout << "JSONL protocol tests passed\n";

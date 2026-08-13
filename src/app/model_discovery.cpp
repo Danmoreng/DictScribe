@@ -12,7 +12,7 @@ namespace dictscribe::app {
 
 namespace {
 
-constexpr std::string_view kRewriteModelFilename = "Qwen3.5-2B-Q8_0.gguf";
+constexpr std::string_view kRewriteModelFilename = "Qwen3.5-0.8B-Q8_0.gguf";
 
 std::filesystem::path EnvironmentPath(const char* name) {
     if (const char* value = std::getenv(name); value && value[0] != '\0') {
@@ -107,7 +107,18 @@ std::filesystem::path FindRewriteModel() {
     if (const auto configured = EnvironmentPath("DICTSCRIBE_REWRITE_MODEL"); !configured.empty()) {
         return configured;
     }
-    return FindNamedFile(HuggingFaceHubCache(), kRewriteModelFilename);
+    const auto hub_cache = HuggingFaceHubCache();
+    const auto official_snapshots = hub_cache /
+        "models--ggml-org--Qwen3.5-0.8B-GGUF/snapshots";
+    if (const auto official = FindNamedFile(official_snapshots, kRewriteModelFilename);
+        !official.empty()) {
+        return official;
+    }
+    const auto directly_cached = hub_cache / kRewriteModelFilename;
+    std::error_code error;
+    return std::filesystem::is_regular_file(directly_cached, error)
+        ? directly_cached
+        : std::filesystem::path{};
 }
 
 bool IsFile(const std::filesystem::path& path) {

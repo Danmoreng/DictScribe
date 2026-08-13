@@ -9,6 +9,7 @@
 namespace dictscribe::protocol {
 
 inline constexpr int kVersion = 1;
+inline constexpr int kRewriteTailVersion = 2;
 inline constexpr std::size_t kMaximumLineBytes = 1024 * 1024;
 
 nlohmann::json parse(std::string_view line);

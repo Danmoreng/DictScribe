@@ -91,7 +91,8 @@ The Linux CPU build was validated with GCC 16.1.1 and CMake against:
 
 - the pinned 741,548,352-byte Nemotron 3.5 ASR Streaming Q8_0 model already in
   the Hugging Face cache;
-- the Qwen3.5-2B Q8_0 rewrite model from the Hugging Face Hub cache.
+- the Qwen3.5-0.8B Q8_0 rewrite model from the official ggml-org Hugging Face
+  repository.
 
 Both models loaded concurrently in their separate persistent workers. ASR
 responded to its protocol ping, llama.cpp completed a real German rewrite, and
@@ -99,44 +100,30 @@ both workers acknowledged shutdown and exited normally. `ldd` confirms that
 only the ASR worker loads NeMo's `libggml.so.0`; the statically linked rewrite
 worker has no GGML shared-library dependency.
 
-The smoke test exposed and then guarded against an initial translation failure;
-the rewrite request now carries its required output language, the prompt repeats
-that constraint, and a lightweight language guard rejects clear language
-changes. A rejected translation is retried once with a stricter instruction;
-if it still fails, the UI displays the original transcript instead of unsafe
-rewritten text. The regression suite includes two consecutive German requests,
-including the longer list example that originally triggered an English result.
-The UI now exposes `Auto`, German, and English rather than hard-coding German;
-the selection controls both NeMo's recognition prompt and the required rewrite
-language. The guard evaluates the surrounding natural language, not isolated
-identifiers, and the model regression test verifies that `llama_rewriter.cpp`
-and `language_guard.cpp` survive inside German prose unchanged.
+The original whole-transcript path used a language guard, retry, and
+language-specific deterministic normalizer. The semantic incremental path no
+longer calls those components. It uses a version-2 structured tail request,
+grammar-constrained JSON output, greedy decoding, and raw ASR fallback for
+every rewrite failure. Technical literals remain protected and restored.
 
 Live cleanup is scheduled in the controller from cumulative Nemotron partials.
 Updates are coalesced for 700 ms but forced after at most two seconds of
 continuous changes. Only one llama.cpp request may be in flight; newer partials
 replace the single pending snapshot instead of accumulating a queue. Completed
 live rewrites update the lower debugging panel without leaving the recording
-state. A UI switch controls whether the final ASR result receives an additional
-full cleanup pass, making live-only and live-plus-final behavior directly
-comparable.
+state. Finalization never waits for a cleanup request. A completed rewrite is
+used at insertion only when it belongs to the exact final ASR snapshot;
+otherwise the complete raw final transcript wins.
 The initial 4B Q8_0 rewrite model could not keep up with live dictation on the
-development CPU. Runtime discovery is therefore fixed to
-`Qwen3.5-2B-Q8_0.gguf` in the standard Hugging Face Hub cache. No other GGUF is
+development CPU. Runtime discovery is now fixed to the benchmark candidate
+`Qwen3.5-0.8B-Q8_0.gguf` in the standard Hugging Face Hub cache. No other GGUF is
 selected as a fallback, and the UI deliberately has no model selector.
 Qwen3.5's chat template is explicitly continued with its non-thinking assistant
 prefix: reasoning traces are both unnecessary and far too expensive for live
-cleanup. Greedy decoding was replaced with Qwen's recommended non-thinking
-sampling configuration: temperature 0.7, top-p 0.8, top-k 20, and presence
-penalty 1.5. Sampling uses a fixed seed so identical cleanup requests are
-reproducible. Before inference, deterministic normalization resolves explicit
-correction markers, spoken paragraph and line breaks, colons, numbered list
-items, and dictated path symbols. Technical literals are replaced with opaque
-placeholders for inference and restored afterwards; the model may omit a
-superseded literal but cannot silently rewrite or duplicate it. As a runtime
-safety bound, CPU inference uses at most eight threads and
-each complete rewrite request has a 15-second deadline. Any reasoning prefix is
-stripped (or rejected when incomplete) before a result can reach the UI.
+cleanup. Generation is greedy with no sampling or presence penalties. CPU
+inference defaults to four threads, a 2,048-token context, a dynamically capped
+output, and a five-second deadline. Any reasoning prefix is stripped (or
+rejected when incomplete) before a result can reach the UI.
 Rewrite quality and self-correction fidelity are not considered selected or
 production-ready until the planned model benchmark is complete.
 

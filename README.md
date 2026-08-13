@@ -178,7 +178,7 @@ $process.ExitCode
 
 ## Models
 
-DictScribe uses `Qwen3.5-2B-Q8_0.gguf` as its fixed rewrite model. It discovers
+DictScribe uses `Qwen3.5-0.8B-Q8_0.gguf` as its current rewrite benchmark model. It discovers
 that exact file in the Hugging Face Hub cache and never falls back to a larger
 or unrelated GGUF. The cache follows the standard Hugging Face environment
 variables: `HF_HUB_CACHE`, then `HF_HOME/hub`, then
@@ -189,11 +189,11 @@ variables: `HF_HUB_CACHE`, then `HF_HOME/hub`, then
 Download the selected quantization into the standard cache with:
 
 ```bash
-hf download unsloth/Qwen3.5-2B-GGUF Qwen3.5-2B-Q8_0.gguf
+hf download ggml-org/Qwen3.5-0.8B-GGUF Qwen3.5-0.8B-Q8_0.gguf
 ```
 
 For a manually downloaded copy, placing the file directly at the cache root as
-`Qwen3.5-2B-Q8_0.gguf` is also supported. The `DICTSCRIBE_REWRITE_MODEL`
+`Qwen3.5-0.8B-Q8_0.gguf` is also supported. The `DICTSCRIBE_REWRITE_MODEL`
 environment variable and `--rewrite-model` remain development overrides; there
 is intentionally no model selector in the UI.
 

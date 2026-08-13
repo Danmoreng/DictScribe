@@ -78,20 +78,23 @@ int main() {
     assert(both_gpu.asr_use_gpu && both_gpu.rewrite_use_gpu);
 
     controller.toggle_recording();
-    const auto live = wait_until(controller, [](const auto& state) {
+    const auto cleaning = wait_until(controller, [](const auto& state) {
         return state.mode == dictscribe::app::DictationMode::Recording &&
-            state.rewritten_text.find("llama_rewriter.cpp weiter 1") != std::string::npos;
+            state.rewrite_in_progress;
     });
-    assert(live.rewritten_text.starts_with("de:"));
-    assert(!live.rewrite_in_progress);
-    assert(live.audio_rms > 0.17F && live.audio_peak > 0.71F);
+    assert(cleaning.audio_rms > 0.17F && cleaning.audio_peak > 0.71F);
 
+    const auto stop_started = std::chrono::steady_clock::now();
     controller.toggle_recording();
     const auto first_complete = wait_until(controller, [](const auto& state) {
         return state.mode == dictscribe::app::DictationMode::Complete;
     });
-    assert(first_complete.rewritten_text == "de:Ich äh teste llama_rewriter.cpp weiter 1");
+    assert(std::chrono::steady_clock::now() - stop_started < 100ms);
+    assert(first_complete.raw_final_text == "Ich teste llama_rewriter.cpp weiter final 1");
+    assert(first_complete.rewritten_text == first_complete.raw_final_text);
     assert(first_complete.audio_rms == 0.0F && first_complete.audio_peak == 0.0F);
+    std::this_thread::sleep_for(200ms);
+    assert(controller.snapshot().rewritten_text == first_complete.raw_final_text);
 
     controller.toggle_recording();
     wait_until(controller, [](const auto& state) {
@@ -102,7 +105,7 @@ int main() {
     const auto second_complete = wait_until(controller, [](const auto& state) {
         return state.mode == dictscribe::app::DictationMode::Complete;
     });
-    assert(second_complete.rewritten_text == "de:Ich äh teste llama_rewriter.cpp weiter 2");
+    assert(second_complete.rewritten_text == second_complete.raw_final_text);
 
     controller.set_language("en");
     controller.toggle_recording();
@@ -125,6 +128,37 @@ int main() {
     });
     assert(switched_final.raw_final_text ==
         "Ich teste llama_rewriter.cpp weiter final 3 Ich teste llama_rewriter.cpp weiter final 4");
+    assert(switched_final.rewritten_text == switched_final.raw_final_text);
+
+    dictscribe::app::AppConfig rewrite_failure_config = config;
+    rewrite_failure_config.rewrite_model = "fail-rewrite.gguf";
+    dictscribe::app::AppController rewrite_failure_controller;
+    assert(rewrite_failure_controller.start(rewrite_failure_config));
+    wait_until(rewrite_failure_controller, [](const auto& state) {
+        return state.mode == dictscribe::app::DictationMode::Ready;
+    });
+    rewrite_failure_controller.toggle_recording();
+    const auto raw_recording = wait_until(rewrite_failure_controller, [](const auto& state) {
+        return state.mode == dictscribe::app::DictationMode::Recording &&
+            !state.error.empty() && !state.rewrite_in_progress;
+    });
+    assert(raw_recording.rewritten_text == raw_recording.live_text);
+    rewrite_failure_controller.toggle_recording();
+    const auto raw_complete = wait_until(rewrite_failure_controller, [](const auto& state) {
+        return state.mode == dictscribe::app::DictationMode::Complete;
+    });
+    assert(raw_complete.rewritten_text == raw_complete.raw_final_text);
+
+    dictscribe::app::AppConfig rewrite_load_failure_config = config;
+    rewrite_load_failure_config.rewrite_model = "fail-load-rewrite.gguf";
+    dictscribe::app::AppController rewrite_load_failure_controller;
+    assert(rewrite_load_failure_controller.start(rewrite_load_failure_config));
+    const auto raw_ready = wait_until(rewrite_load_failure_controller, [](const auto& state) {
+        return state.mode == dictscribe::app::DictationMode::Ready;
+    });
+    assert(raw_ready.asr_ready);
+    assert(!raw_ready.rewrite_ready);
+    assert(!raw_ready.error.empty());
 
     dictscribe::app::AppConfig recovery_config = config;
     recovery_config.asr_model = "fail-gpu-asr.gguf";

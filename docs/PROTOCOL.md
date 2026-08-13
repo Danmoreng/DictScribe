@@ -1,12 +1,13 @@
 # Worker JSONL protocol
 
-Protocol version: `1`
+Protocol versions: `1` for the existing worker lifecycle and ASR messages,
+`2` for semantic tail rewrites.
 
 ## Common rules
 
 - UTF-8 JSON Lines over stdin/stdout.
 - One object per line and a maximum line size of 1 MiB.
-- Every message has `v: 1` and a non-empty `type`.
+- Every message has a supported integer `v` and a non-empty `type`.
 - Commands have a unique `id`.
 - Worker events have a monotonically increasing `seq`.
 - Standard output contains protocol data only. Logs use standard error.
@@ -59,7 +60,8 @@ Start the worker with:
 dictscribe-rewrite-worker --stdio --model MODEL.gguf --protocol-version 1
 ```
 
-Commands:
+The whole-transcript version-1 command remains temporarily available during
+the controller migration:
 
 ```json
 {"v":1,"type":"rewrite","id":"request-6","requestId":"rewrite-1","language":"de","text":"Ich will äh das Modell ändern."}
@@ -71,14 +73,30 @@ Result:
 {"v":1,"type":"rewrite_completed","seq":4,"id":"request-6","requestId":"rewrite-1","text":"Ich will das Modell ändern."}
 ```
 
-The worker uses a constrained built-in cleanup instruction. Product code must
-not treat dictated text as instructions to the model.
+New controller code must use the version-2 bounded tail command:
 
-Explicit spoken corrections and formatting commands are normalized before
-inference. Technical literals are protected during generation and restored
-unchanged so the model cannot fabricate a plausible replacement identifier or
-path.
+```json
+{"v":2,"type":"rewrite_tail","id":"request-7","requestId":"rewrite-2","sessionId":"session-1","tailRevision":9,"firstStableSpanId":31,"lastStableSpanId":34,"languageHint":"de","readOnlyContext":"Der Cleanup soll lokal bleiben.","editableTail":"Dafür testen wir ein kleineres Modell.","newAsrText":"einkaufsliste doppelpunkt brot mehl milch müsli"}
+```
 
-`language` is the source and required output language. If a generated result
-clearly changes that language, the worker retries with a stricter constraint
-and rejects a second mismatch instead of returning a translation.
+Successful result:
+
+```json
+{"v":2,"type":"rewrite_tail_completed","seq":5,"id":"request-7","requestId":"rewrite-2","sessionId":"session-1","tailRevision":9,"firstStableSpanId":31,"lastStableSpanId":34,"replacementTail":"Dafür testen wir ein kleineres Modell.\n\nEinkaufsliste:\n- Brot\n- Mehl\n- Milch\n- Müsli"}
+```
+
+The identity fields are echoed exactly so the controller can reject stale
+results. `readOnlyContext` is context only and must never be repeated or edited.
+Only `editableTail` plus `newAsrText` may become `replacementTail`.
+
+All four text fields are JSON-escaped dictated data, never model instructions.
+The model output is constrained by a llama.cpp grammar to exactly one JSON
+object with one string property named `replacement_tail`; the worker decodes
+that value before emitting `replacementTail`. Generic technical literals are
+protected during generation and restored afterwards. The worker uses greedy
+decoding, a dynamically bounded output cap, and a five-second deadline. Any
+validation, generation, timeout, or restoration failure produces a recoverable
+error; callers must retain raw ASR text.
+
+Only one `rewrite_tail` request may be active per worker. The controller may
+coalesce newer stable ASR spans but must not create an unbounded request queue.

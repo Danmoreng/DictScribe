@@ -89,13 +89,15 @@ private:
     AppConfig config_;
     std::uint64_t request_sequence_ = 0;
     bool rewrite_in_flight_ = false;
-    bool finalization_waiting_ = false;
+    bool rewrite_unavailable_ = false;
     bool language_restart_pending_ = false;
     bool pending_live_cleanup_ = false;
     std::chrono::steady_clock::time_point live_cleanup_pending_since_{};
     std::chrono::steady_clock::time_point live_cleanup_due_{};
     std::string active_rewrite_id_;
     std::string active_rewrite_session_id_;
+    std::string active_rewrite_source_;
+    std::string last_completed_rewrite_source_;
     std::string session_id_;
     std::string session_prefix_;
     std::string current_session_text_;

@@ -17,7 +17,8 @@ nlohmann::json parse(std::string_view line) {
         throw std::runtime_error("protocol message must be a JSON object");
     }
     if (!message.contains("v") || !message["v"].is_number_integer() ||
-        message["v"].get<int>() != kVersion) {
+        (message["v"].get<int>() != kVersion &&
+         message["v"].get<int>() != kRewriteTailVersion)) {
         throw std::runtime_error("unsupported or missing protocol version");
     }
     (void)require_string(message, "type");
