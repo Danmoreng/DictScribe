@@ -66,9 +66,13 @@ Before the Phase-3 controller migration becomes the active default:
 1. turn the seed scenarios into a scored corpus with explicit safety and shape
    assertions;
 2. add numeric and technical-anchor validation with raw-tail fallback;
-3. benchmark Q4_0 against Q8_0 under the same contract;
-4. decide whether prompt work is sufficient or a task-specific LoRA/SFT or a
+3. decide whether prompt work is sufficient or a task-specific LoRA/SFT or a
    different small Apache-2.0 model is required.
+
+Q8_0 remains the development quantization for the current implementation
+milestones. A Q4_0 comparison is deferred until a later performance and
+packaging optimization milestone; it is not a prerequisite for the bounded
+controller migration.
 
 Run the current manual smoke corpus with:
 
