@@ -48,6 +48,13 @@ add_executable(dictscribe-technical-literal-tests
 target_include_directories(dictscribe-technical-literal-tests PRIVATE src)
 add_test(NAME dictscribe_technical_literals COMMAND dictscribe-technical-literal-tests)
 
+add_executable(dictscribe-text-layout-tests
+    tests/text_layout_test.cpp
+    src/ui/text_layout.cpp
+)
+target_include_directories(dictscribe-text-layout-tests PRIVATE src)
+add_test(NAME dictscribe_text_layout COMMAND dictscribe-text-layout-tests)
+
 find_package(Threads REQUIRED)
 
 add_executable(dictscribe-fake-asr-worker tests/fake_asr_worker.cpp)
@@ -141,13 +148,18 @@ if(DICTSCRIBE_BUILD_UI)
 
         find_package(OpenGL REQUIRED)
         find_package(X11 REQUIRED)
+        if(NOT X11_XTest_FOUND)
+            message(FATAL_ERROR "The Linux overlay requires the X11 XTEST development library")
+        endif()
         find_package(Freetype REQUIRED)
         find_package(Fontconfig REQUIRED)
 
         add_executable(dictscribe
             src/app/main.cpp
+            src/platform/linux/linux_x11.cpp
             src/ui/dictation_window.cpp
             src/ui/skia_surface.cpp
+            src/ui/text_layout.cpp
             src/protocol/jsonl_protocol.cpp
             src/app/app_controller.cpp
             src/app/model_discovery.cpp
@@ -199,6 +211,7 @@ if(DICTSCRIBE_BUILD_UI)
             Freetype::Freetype
             OpenGL::GL
             X11::X11
+            "${X11_XTest_LIB}"
             Threads::Threads
             ${CMAKE_DL_LIBS}
         )

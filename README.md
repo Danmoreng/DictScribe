@@ -32,7 +32,7 @@ Only commands, status events, and transcript text use JSONL pipes.
 - a C++20 compiler
 - Git
 - Windows: Visual Studio 2022 Build Tools with the C++ workload and vcpkg
-- Linux: audio and X11 development libraries supported by miniaudio and GLFW
+- Linux/X11: audio, GLFW, and XTEST development libraries
 - a compatible local Skia checkout for the desktop UI
 - optional: a compatible CUDA toolkit for `--cuda`
 
@@ -179,25 +179,28 @@ For a manually downloaded copy, placing the file directly at the cache root as
 environment variable and `--rewrite-model` remain development overrides; there
 is intentionally no model selector in the UI.
 
-## Linux/X11 development UI
+## Linux/X11 voice keyboard
 
-Start the UI after a normal build:
+Start the background process after a normal build:
 
 ```bash
 ./scripts/run-ui.sh
 ```
 
-Press Enter or Space to start and stop dictation. The upper panel shows the
-cumulative raw Nemotron transcript. The lower panel updates with debounced live
-llama.cpp cleanup while recording continues. Escape cancels an active
-dictation; when idle, Escape closes the window.
+DictScribe remains hidden until `Ctrl+Alt+Space` starts dictation. It then shows
+a compact, always-on-top overlay near the mouse pointer without taking keyboard
+focus from the active application. Press `Ctrl+Alt+Space` or `Enter` to finish
+and insert, or `Escape` to cancel. `Ctrl+Alt+Q` exits the background process.
+The overlay can be dragged, scrolled, and used to select `Auto`, `Deutsch`, or
+`English` while recording continues.
 
-The language button above the transcript cycles through `Auto`, `Deutsch`, and
-`English` (keyboard shortcut: `L`). The selected language is sent to both ASR
-and rewrite processing. `Auto` lets the models infer it from the utterance.
-Explicit German or English is safer for short dictations containing many
-foreign-language technical terms. An initial value can also be supplied with
-`--language auto|de|en` or `DICTSCRIBE_LANGUAGE`.
+The X11 host remembers the most recent external focus target during dictation.
+On completion it owns the X11 clipboard and sends a local `Ctrl+V` through the
+XTEST extension to that target. If focus restoration or synthetic input is not
+available, the text remains on the clipboard for manual insertion. This first
+Linux overlay targets native X11 sessions; a Wayland-native global-shortcut and
+insertion implementation is a separate platform milestone. An initial language
+can also be supplied with `--language auto|de|en` or `DICTSCRIBE_LANGUAGE`.
 
 Live requests are bounded to one in-flight rewrite. New ASR partials are
 coalesced for roughly 700 ms, with a two-second maximum wait, so continuous

@@ -1,5 +1,23 @@
 # Implementation notes
 
+## 2026-08-13: Linux/X11 overlay
+
+The former large Linux test window is now a compact GLFW/Skia overlay matching
+the Windows dictation surface. A separate X11 control connection owns global
+hotkeys and clipboard selection requests while GLFW keeps ownership of the
+rendering window. `Ctrl+Alt+Space` toggles dictation, Enter and Escape are
+grabbed only during an active session, and `Ctrl+Alt+Q` exits because the first
+Linux slice does not yet include a tray icon.
+
+The overlay is undecorated, topmost, omitted from taskbar/pager lists, and
+declares that it does not accept keyboard focus. It is placed near the pointer,
+because X11 has no general cross-toolkit caret-position contract. The most
+recent external active/focus windows are retained as insertion targets. Final
+text is served through the local X11 clipboard and pasted with XTEST; when that
+cannot be done safely, it remains available on the clipboard. Explicit line
+breaks are preserved by the Linux wrapper in preparation for structured
+semantic cleanup output.
+
 ## 2026-08-12: incremental cleanup direction
 
 The current cumulative whole-transcript live rewrite is a prototype, not the
@@ -42,13 +60,10 @@ The current NeMo-selected SentencePiece commit predates GCC 16's stricter
 transitive-include behavior. DictScribe supplies `-include cstdint` only to that
 dependency build instead of modifying vendored source.
 
-The first UI milestone is now a deliberately small Linux/X11 Skia test window.
-It acts as the controller for both workers while preserving their process and
-GGML isolation. Enter or Space starts and stops dictation, and Escape cancels
-an active session or closes the idle window. Live ASR output and the finalized
-llama.cpp rewrite are displayed in separate regions so streaming behavior and
-the rewrite transition can be inspected directly. Tray integration, global
-hotkeys, text insertion, and the production overlay remain later milestones.
+The first UI milestone was a deliberately small Linux/X11 Skia test window. It
+acted as the controller for both workers while preserving their process and
+GGML isolation. It has since been replaced by the Linux/X11 overlay described
+above.
 
 `scripts/build.sh` builds this UI by default. `--skip-ui` retains the previous
 worker-only build for environments without X11 or Skia development files, and

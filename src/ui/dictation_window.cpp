@@ -1,22 +1,30 @@
 #include "ui/dictation_window.hpp"
 
 #include "app/app_controller.hpp"
+#include "platform/linux/linux_x11.hpp"
 #include "ui/skia_surface.hpp"
+#include "ui/text_layout.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <iostream>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "GLFW/glfw3.h"
+#define GLFW_EXPOSE_NATIVE_X11
+#include "GLFW/glfw3native.h"
+#include <X11/Xatom.h>
+#include <X11/Xutil.h>
 #include "include/core/SkCanvas.h"
 #include "include/core/SkFont.h"
 #include "include/core/SkFontMgr.h"
 #include "include/core/SkFontStyle.h"
 #include "include/core/SkPaint.h"
-#include "include/core/SkRect.h"
+#include "include/core/SkRRect.h"
 #include "include/ports/SkFontMgr_fontconfig.h"
 #include "include/ports/SkFontScanner_FreeType.h"
 
@@ -24,23 +32,46 @@ namespace dictscribe::ui {
 
 namespace {
 
-constexpr SkColor kBackground = SkColorSetRGB(13, 16, 23);
-constexpr SkColor kPanel = SkColorSetRGB(22, 27, 37);
-constexpr SkColor kPanelRaised = SkColorSetRGB(28, 34, 46);
-constexpr SkColor kBorder = SkColorSetRGB(49, 58, 75);
-constexpr SkColor kText = SkColorSetRGB(239, 243, 250);
-constexpr SkColor kMuted = SkColorSetRGB(145, 156, 177);
-constexpr SkColor kAccent = SkColorSetRGB(120, 103, 255);
-constexpr SkColor kAccentBright = SkColorSetRGB(159, 146, 255);
-constexpr SkColor kRecording = SkColorSetRGB(255, 82, 108);
-constexpr SkColor kSuccess = SkColorSetRGB(61, 210, 151);
-constexpr SkColor kWarning = SkColorSetRGB(255, 184, 77);
+constexpr int kLogicalWidth = 720;
+constexpr int kMinimumLogicalHeight = 244;
+constexpr int kMaximumLogicalHeight = 460;
+constexpr float kHeaderHeight = 52.0F;
+constexpr float kFooterHeight = 54.0F;
+constexpr float kBodyTop = 75.0F;
+constexpr float kBodyLineHeight = 23.0F;
+
+constexpr SkColor kBackground = SkColorSetARGB(242, 14, 17, 23);
+constexpr SkColor kSurface = SkColorSetARGB(250, 20, 24, 32);
+constexpr SkColor kElevated = SkColorSetRGB(27, 32, 42);
+constexpr SkColor kBorder = SkColorSetRGB(61, 69, 84);
+constexpr SkColor kText = SkColorSetRGB(244, 246, 250);
+constexpr SkColor kMuted = SkColorSetRGB(158, 167, 184);
+constexpr SkColor kSubtle = SkColorSetRGB(107, 117, 136);
+constexpr SkColor kAccent = SkColorSetRGB(139, 124, 255);
+constexpr SkColor kRecording = SkColorSetRGB(255, 83, 112);
+constexpr SkColor kSuccess = SkColorSetRGB(73, 214, 158);
+constexpr SkColor kWarning = SkColorSetRGB(255, 186, 85);
 
 struct WindowState {
     app::AppController* controller = nullptr;
-    SkRect primary_button = SkRect::MakeEmpty();
-    SkRect cancel_button = SkRect::MakeEmpty();
-    SkRect language_button = SkRect::MakeEmpty();
+    GLFWwindow* window = nullptr;
+    linux_x11::X11Desktop desktop;
+    linux_x11::TargetContext target;
+    app::AppSnapshot snapshot;
+    std::array<float, 16> level_history{};
+    SkRect language_badge = SkRect::MakeEmpty();
+    SkRect language_menu = SkRect::MakeEmpty();
+    bool language_menu_open = false;
+    bool session_active = false;
+    bool dragging = false;
+    int drag_window_x = 0;
+    int drag_window_y = 0;
+    int drag_pointer_x = 0;
+    int drag_pointer_y = 0;
+    int scroll_line = 0;
+    int max_scroll_line = 0;
+    int visible_line_count = 1;
+    int rendered_height = kMinimumLogicalHeight;
 };
 
 SkPaint Fill(SkColor color) {
@@ -51,332 +82,557 @@ SkPaint Fill(SkColor color) {
     return paint;
 }
 
-float TextWidth(const SkFont& font, const std::string& text) {
+float TextWidth(const SkFont& font, std::string_view text) {
     return font.measureText(text.data(), text.size(), SkTextEncoding::kUTF8);
 }
 
-void DrawSimpleText(
+void DrawText(
     SkCanvas& canvas,
-    const std::string& text,
+    std::string_view text,
     float x,
     float baseline,
     const SkFont& font,
     SkColor color) {
-    SkPaint paint = Fill(color);
     canvas.drawSimpleText(
-        text.data(), text.size(), SkTextEncoding::kUTF8, x, baseline, font, paint);
-}
-
-void DrawCenteredText(
-    SkCanvas& canvas,
-    const std::string& text,
-    const SkRect& bounds,
-    const SkFont& font,
-    SkColor color,
-    float baseline_adjustment = 5.0F) {
-    const float x = bounds.centerX() - TextWidth(font, text) * 0.5F;
-    const float y = bounds.centerY() + baseline_adjustment;
-    DrawSimpleText(canvas, text, x, y, font, color);
+        text.data(), text.size(), SkTextEncoding::kUTF8, x, baseline, font, Fill(color));
 }
 
 std::vector<std::string> WrapText(
     const std::string& text,
     const SkFont& font,
-    float max_width,
-    std::size_t max_lines) {
+    float max_width) {
     std::vector<std::string> lines;
-    std::istringstream stream(text);
-    std::string word;
-    std::string current;
-    while (stream >> word) {
-        const std::string candidate = current.empty() ? word : current + " " + word;
-        if (!current.empty() && TextWidth(font, candidate) > max_width) {
-            lines.push_back(current);
-            current = word;
-            if (lines.size() == max_lines) {
-                break;
+    for (const std::string& paragraph : SplitExplicitLines(text)) {
+        if (paragraph.empty()) {
+            lines.emplace_back();
+            continue;
+        }
+        std::istringstream words(paragraph);
+        std::string word;
+        std::string current;
+        while (words >> word) {
+            const std::string candidate = current.empty() ? word : current + " " + word;
+            if (!current.empty() && TextWidth(font, candidate) > max_width) {
+                lines.push_back(current);
+                current = word;
+            } else {
+                current = candidate;
             }
-        } else {
-            current = candidate;
         }
+        if (!current.empty()) lines.push_back(current);
     }
-    if (lines.size() < max_lines && !current.empty()) {
-        lines.push_back(current);
-    }
-    if (lines.size() == max_lines && stream.good()) {
-        std::string& last = lines.back();
-        while (!last.empty() && TextWidth(font, last + "...") > max_width) {
-            last.pop_back();
-        }
-        last += "...";
-    }
+    if (lines.empty()) lines.emplace_back();
     return lines;
 }
 
-void DrawWrappedText(
-    SkCanvas& canvas,
-    const std::string& text,
-    float x,
-    float baseline,
-    float max_width,
-    float line_height,
-    std::size_t max_lines,
-    const SkFont& font,
-    SkColor color) {
-    for (const auto& line : WrapText(text, font, max_width, max_lines)) {
-        DrawSimpleText(canvas, line, x, baseline, font, color);
-        baseline += line_height;
+std::string DisplayText(const app::AppSnapshot& snapshot) {
+    if (snapshot.mode == app::DictationMode::StartingRecording ||
+        snapshot.mode == app::DictationMode::Recording ||
+        snapshot.mode == app::DictationMode::Finalizing) {
+        return snapshot.live_text;
     }
+    return !snapshot.rewritten_text.empty() ? snapshot.rewritten_text : snapshot.live_text;
+}
+
+std::string PlaceholderText(const app::AppSnapshot& snapshot) {
+    if (snapshot.mode == app::DictationMode::Starting) {
+        return "Preparing the local speech and rewrite models...";
+    }
+    if (snapshot.mode == app::DictationMode::Ready ||
+        snapshot.mode == app::DictationMode::Complete) {
+        return "Press Ctrl+Alt+Space in any text field to start dictation.";
+    }
+    if (snapshot.mode == app::DictationMode::Error && !snapshot.error.empty()) {
+        return snapshot.error;
+    }
+    return "Speak naturally. Your words will appear here.";
+}
+
+const char* LanguageBadge(const app::AppSnapshot& snapshot) {
+    if (snapshot.language == "de") return "DE";
+    if (snapshot.language == "en") return "EN";
+    return "AUTO";
+}
+
+const char* StatusLabel(const app::AppSnapshot& snapshot) {
+    if ((snapshot.mode == app::DictationMode::StartingRecording ||
+         snapshot.mode == app::DictationMode::Finalizing) &&
+        snapshot.status.find("Switching") != std::string::npos) {
+        return "Switching language";
+    }
+    switch (snapshot.mode) {
+    case app::DictationMode::Starting: return "Loading local models";
+    case app::DictationMode::Ready: return "Ready";
+    case app::DictationMode::StartingRecording: return "Opening microphone";
+    case app::DictationMode::Recording: return "Listening";
+    case app::DictationMode::Finalizing: return "Finalizing speech";
+    case app::DictationMode::Complete: return "Complete";
+    case app::DictationMode::Cancelling: return "Cancelling";
+    case app::DictationMode::Error: return "Needs attention";
+    }
+    return "DictScribe";
+}
+
+SkColor StatusColor(app::DictationMode mode) {
+    if (mode == app::DictationMode::Recording || mode == app::DictationMode::StartingRecording) {
+        return kRecording;
+    }
+    if (mode == app::DictationMode::Ready || mode == app::DictationMode::Complete) {
+        return kSuccess;
+    }
+    if (mode == app::DictationMode::Error) return kWarning;
+    return kAccent;
 }
 
 sk_sp<SkTypeface> FindTypeface(const sk_sp<SkFontMgr>& manager, SkFontStyle style) {
-    for (const char* family : {"Inter", "Segoe UI", "Noto Sans", "DejaVu Sans", "sans-serif"}) {
-        if (auto typeface = manager->matchFamilyStyle(family, style)) {
-            return typeface;
-        }
+    for (const char* family : {"Inter", "Noto Sans", "DejaVu Sans", "sans-serif"}) {
+        if (auto typeface = manager->matchFamilyStyle(family, style)) return typeface;
     }
     return manager->matchFamilyStyle(nullptr, style);
 }
 
-SkColor StatusColor(const app::AppSnapshot& snapshot) {
-    if (snapshot.mode == app::DictationMode::Error) return kWarning;
-    if (snapshot.mode == app::DictationMode::Recording) return kRecording;
-    if (snapshot.mode == app::DictationMode::Ready ||
-        snapshot.mode == app::DictationMode::Complete) return kSuccess;
-    return kAccentBright;
+std::vector<std::string> WrappedBody(
+    const app::AppSnapshot& snapshot,
+    const sk_sp<SkTypeface>& regular) {
+    const SkFont body_font(regular, 16.5F);
+    const std::string display = DisplayText(snapshot);
+    const std::string body = display.empty() ? PlaceholderText(snapshot) : display;
+    return WrapText(body, body_font, static_cast<float>(kLogicalWidth) - 78.0F);
 }
 
-const char* NextLanguage(const app::AppSnapshot& snapshot) {
-    if (snapshot.language == "auto") return "de";
-    if (snapshot.language == "de") return "en";
-    return "auto";
+int DesiredHeight(const app::AppSnapshot& snapshot, const sk_sp<SkTypeface>& regular) {
+    const int lines = std::clamp(
+        static_cast<int>(WrappedBody(snapshot, regular).size()), 3, 13);
+    const int desired = static_cast<int>(
+        kBodyTop + lines * kBodyLineHeight + 16.0F + kFooterHeight);
+    return std::clamp(desired, kMinimumLogicalHeight, kMaximumLogicalHeight);
 }
 
-void DrawStatusPill(
-    SkCanvas& canvas,
-    const std::string& label,
-    bool ready,
-    float right,
-    float top,
-    const SkFont& font) {
-    const float width = TextWidth(font, label) + 36.0F;
-    const SkRect pill = SkRect::MakeXYWH(right - width, top, width, 30.0F);
-    canvas.drawRoundRect(pill, 15.0F, 15.0F, Fill(kPanelRaised));
-    canvas.drawCircle(pill.left() + 15.0F, pill.centerY(), 4.0F, Fill(ready ? kSuccess : kWarning));
-    DrawSimpleText(canvas, label, pill.left() + 25.0F, pill.top() + 20.0F, font, ready ? kText : kMuted);
+void ConfigureOverlayWindow(GLFWwindow* window) {
+    Display* display = glfwGetX11Display();
+    const Window xwindow = glfwGetX11Window(window);
+    if (!display || xwindow == None) return;
+
+    XWMHints hints{};
+    hints.flags = InputHint;
+    hints.input = False;
+    XSetWMHints(display, xwindow, &hints);
+
+    const Atom window_type = XInternAtom(display, "_NET_WM_WINDOW_TYPE", False);
+    const Atom notification = XInternAtom(display, "_NET_WM_WINDOW_TYPE_NOTIFICATION", False);
+    XChangeProperty(
+        display,
+        xwindow,
+        window_type,
+        XA_ATOM,
+        32,
+        PropModeReplace,
+        reinterpret_cast<const unsigned char*>(&notification),
+        1);
+
+    const Atom state = XInternAtom(display, "_NET_WM_STATE", False);
+    const std::array<Atom, 3> states = {
+        XInternAtom(display, "_NET_WM_STATE_ABOVE", False),
+        XInternAtom(display, "_NET_WM_STATE_SKIP_TASKBAR", False),
+        XInternAtom(display, "_NET_WM_STATE_SKIP_PAGER", False),
+    };
+    XChangeProperty(
+        display,
+        xwindow,
+        state,
+        XA_ATOM,
+        32,
+        PropModeReplace,
+        reinterpret_cast<const unsigned char*>(states.data()),
+        static_cast<int>(states.size()));
+    XFlush(display);
 }
 
-void DrawTranscriptCard(
-    SkCanvas& canvas,
-    const SkRect& bounds,
-    const char* label,
-    const std::string& text,
-    const std::string& placeholder,
-    const SkFont& label_font,
-    const SkFont& body_font,
-    SkColor body_color,
-    bool active,
-    double time) {
-    SkPaint panel = Fill(active ? kPanelRaised : kPanel);
-    canvas.drawRoundRect(bounds, 18.0F, 18.0F, panel);
-    SkPaint border = Fill(active ? kAccent : kBorder);
-    border.setStyle(SkPaint::kStroke_Style);
-    border.setStrokeWidth(active ? 1.5F : 1.0F);
-    canvas.drawRoundRect(bounds, 18.0F, 18.0F, border);
+SkRect LanguageBadgeRect(const app::AppSnapshot& snapshot) {
+    const float width = std::string_view(LanguageBadge(snapshot)) == "AUTO" ? 62.0F : 52.0F;
+    return SkRect::MakeXYWH(static_cast<float>(kLogicalWidth) - 150.0F - width, 11.0F, width, 30.0F);
+}
 
-    DrawSimpleText(canvas, label, bounds.left() + 24.0F, bounds.top() + 31.0F, label_font, active ? kAccentBright : kMuted);
-    if (active) {
-        const float pulse = static_cast<float>((std::sin(time * 5.0) + 1.0) * 0.5);
-        const SkColor color = SkColorSetARGB(
-            150 + static_cast<int>(pulse * 105.0F), 159, 146, 255);
-        canvas.drawCircle(bounds.right() - 27.0F, bounds.top() + 25.0F, 4.0F + pulse, Fill(color));
+SkRect LanguageMenuRect(const app::AppSnapshot& snapshot) {
+    const SkRect badge = LanguageBadgeRect(snapshot);
+    return SkRect::MakeXYWH(badge.right() - 184.0F, badge.bottom() + 6.0F, 184.0F, 114.0F);
+}
+
+SkRect LanguageOptionRect(const app::AppSnapshot& snapshot, int option) {
+    const SkRect menu = LanguageMenuRect(snapshot);
+    return SkRect::MakeXYWH(
+        menu.left() + 6.0F,
+        menu.top() + 6.0F + static_cast<float>(option) * 34.0F,
+        menu.width() - 12.0F,
+        30.0F);
+}
+
+void SelectLanguage(WindowState& state, int option) {
+    if (option == 0) state.controller->set_language("auto");
+    else if (option == 1) state.controller->set_language("de");
+    else if (option == 2) state.controller->set_language("en");
+}
+
+void ShowNearTarget(WindowState& state, const sk_sp<SkTypeface>& regular) {
+    const int height = DesiredHeight(state.controller->snapshot(), regular);
+    int x = state.target.anchor_x - kLogicalWidth / 2;
+    int y = state.target.anchor_y - height - 20;
+
+    int monitor_count = 0;
+    GLFWmonitor** monitors = glfwGetMonitors(&monitor_count);
+    GLFWmonitor* chosen = glfwGetPrimaryMonitor();
+    for (int index = 0; index < monitor_count; ++index) {
+        int mx = 0;
+        int my = 0;
+        int mw = 0;
+        int mh = 0;
+        glfwGetMonitorWorkarea(monitors[index], &mx, &my, &mw, &mh);
+        if (state.target.anchor_x >= mx && state.target.anchor_x < mx + mw &&
+            state.target.anchor_y >= my && state.target.anchor_y < my + mh) {
+            chosen = monitors[index];
+            break;
+        }
     }
 
-    const std::string& display = text.empty() ? placeholder : text;
-    DrawWrappedText(
-        canvas,
-        display,
-        bounds.left() + 24.0F,
-        bounds.top() + 73.0F,
-        bounds.width() - 48.0F,
-        31.0F,
-        4,
-        body_font,
-        text.empty() ? kMuted : body_color);
+    int mx = 0;
+    int my = 0;
+    int mw = kLogicalWidth;
+    int mh = height;
+    if (chosen) glfwGetMonitorWorkarea(chosen, &mx, &my, &mw, &mh);
+    if (y < my + 8) y = state.target.anchor_y + 20;
+    x = std::clamp(x, mx + 8, std::max(mx + 8, mx + mw - kLogicalWidth - 8));
+    y = std::clamp(y, my + 8, std::max(my + 8, my + mh - height - 8));
+
+    state.rendered_height = height;
+    glfwSetWindowSize(state.window, kLogicalWidth, height);
+    glfwSetWindowPos(state.window, x, y);
+    glfwShowWindow(state.window);
+}
+
+void HideOverlay(WindowState& state) {
+    state.language_menu_open = false;
+    state.dragging = false;
+    glfwHideWindow(state.window);
+}
+
+void ToggleDictation(WindowState& state, const sk_sp<SkTypeface>& regular) {
+    const app::AppSnapshot snapshot = state.controller->snapshot();
+    if (snapshot.mode == app::DictationMode::Ready ||
+        snapshot.mode == app::DictationMode::Complete) {
+        const auto candidate = state.desktop.capture_target();
+        if (candidate.valid()) state.target = candidate;
+        state.session_active = true;
+        state.scroll_line = 0;
+        state.desktop.set_session_hotkeys(true);
+        ShowNearTarget(state, regular);
+        state.controller->toggle_recording();
+    } else if (snapshot.mode == app::DictationMode::Recording) {
+        state.controller->toggle_recording();
+    } else if (snapshot.mode == app::DictationMode::Starting ||
+               snapshot.mode == app::DictationMode::Error) {
+        const auto candidate = state.desktop.capture_target();
+        if (candidate.valid()) state.target = candidate;
+        ShowNearTarget(state, regular);
+    }
+}
+
+void CancelDictation(WindowState& state) {
+    if (!app::CanCancel(state.controller->snapshot())) return;
+    state.controller->cancel_recording();
+    state.session_active = false;
+    state.desktop.set_session_hotkeys(false);
+    HideOverlay(state);
+}
+
+void UpdateLevelHistory(WindowState& state) {
+    std::move(
+        state.level_history.begin() + 1,
+        state.level_history.end(),
+        state.level_history.begin());
+    if (state.snapshot.mode != app::DictationMode::Recording) {
+        state.level_history.back() = 0.0F;
+        return;
+    }
+    const float source = std::max(
+        state.snapshot.audio_rms, state.snapshot.audio_peak * 0.35F);
+    const float decibels = 20.0F * std::log10(std::max(source, 0.00001F));
+    state.level_history.back() = std::clamp((decibels + 55.0F) / 43.0F, 0.0F, 1.0F);
 }
 
 void Render(
-    GLFWwindow* window,
     SkiaSurface& surface,
-    WindowState& window_state,
+    WindowState& state,
     const sk_sp<SkTypeface>& regular,
-    const sk_sp<SkTypeface>& bold) {
-    if (!surface.ensure_size(window) || !surface.surface()) {
-        return;
-    }
-    const app::AppSnapshot snapshot = window_state.controller->snapshot();
-    SkCanvas* canvas = surface.surface()->getCanvas();
+    const sk_sp<SkTypeface>& semibold) {
+    if (!surface.ensure_size(state.window) || !surface.surface()) return;
+
     int width = 0;
     int height = 0;
     int framebuffer_width = 0;
     int framebuffer_height = 0;
-    glfwGetWindowSize(window, &width, &height);
-    glfwGetFramebufferSize(window, &framebuffer_width, &framebuffer_height);
+    glfwGetWindowSize(state.window, &width, &height);
+    glfwGetFramebufferSize(state.window, &framebuffer_width, &framebuffer_height);
 
-    canvas->clear(kBackground);
+    SkCanvas* canvas = surface.surface()->getCanvas();
+    canvas->clear(SK_ColorTRANSPARENT);
     canvas->save();
     canvas->scale(
         static_cast<float>(framebuffer_width) / std::max(width, 1),
         static_cast<float>(framebuffer_height) / std::max(height, 1));
 
-    const SkFont title_font(bold, 25.0F);
-    const SkFont subtitle_font(regular, 13.0F);
-    const SkFont status_font(regular, 14.0F);
-    const SkFont pill_font(regular, 11.5F);
-    const SkFont label_font(bold, 11.5F);
-    const SkFont body_font(regular, 21.0F);
-    const SkFont button_font(bold, 15.0F);
-    const float margin = 34.0F;
+    const float logical_width = static_cast<float>(width);
+    const float logical_height = static_cast<float>(height);
+    canvas->clipRRect(
+        SkRRect::MakeRectXY(SkRect::MakeWH(logical_width, logical_height), 8.0F, 8.0F),
+        true);
+    canvas->drawRect(SkRect::MakeWH(logical_width, logical_height), Fill(kBackground));
 
-    canvas->drawRoundRect(SkRect::MakeXYWH(margin, 28.0F, 48.0F, 48.0F), 14.0F, 14.0F, Fill(kAccent));
-    DrawCenteredText(*canvas, "DS", SkRect::MakeXYWH(margin, 28.0F, 48.0F, 48.0F), button_font, kText, 5.0F);
-    DrawSimpleText(*canvas, "DictScribe", margin + 64.0F, 51.0F, title_font, kText);
-    DrawSimpleText(*canvas, "Local dictation preview", margin + 65.0F, 72.0F, subtitle_font, kMuted);
+    const SkFont status_font(semibold, 13.0F);
+    const SkFont body_font(regular, 16.5F);
+    const SkFont badge_font(semibold, 11.5F);
+    const SkFont hint_font(regular, 12.0F);
+    const SkFont key_font(semibold, 11.5F);
+    const SkFont menu_font(regular, 12.5F);
+    SkPaint border = Fill(kBorder);
+    border.setStyle(SkPaint::kStroke_Style);
+    border.setStrokeWidth(1.0F);
 
-    float pill_right = static_cast<float>(width) - margin;
-    DrawStatusPill(*canvas, snapshot.rewrite_ready ? "Rewrite ready" : "Rewrite loading", snapshot.rewrite_ready, pill_right, 34.0F, pill_font);
-    pill_right -= TextWidth(pill_font, snapshot.rewrite_ready ? "Rewrite ready" : "Rewrite loading") + 48.0F;
-    DrawStatusPill(*canvas, snapshot.asr_ready ? "Speech ready" : "Speech loading", snapshot.asr_ready, pill_right, 34.0F, pill_font);
+    const SkColor status_color = StatusColor(state.snapshot.mode);
+    canvas->drawCircle(28.0F, 26.0F, 5.0F, Fill(status_color));
+    DrawText(*canvas, StatusLabel(state.snapshot), 43.0F, 31.0F, status_font, kText);
 
-    canvas->drawCircle(margin + 5.0F, 112.0F, 5.0F, Fill(StatusColor(snapshot)));
-    DrawSimpleText(*canvas, snapshot.status, margin + 18.0F, 117.0F, status_font, kMuted);
-
-    const std::string language_label = LanguageLabel(snapshot);
-    const float language_width = TextWidth(pill_font, language_label) + 34.0F;
-    window_state.language_button = SkRect::MakeXYWH(
-        static_cast<float>(width) - margin - language_width,
-        96.0F,
-        language_width,
-        32.0F);
+    state.language_badge = LanguageBadgeRect(state.snapshot);
+    canvas->drawRoundRect(state.language_badge, 7.0F, 7.0F, Fill(kElevated));
     canvas->drawRoundRect(
-        window_state.language_button,
-        12.0F,
-        12.0F,
-        Fill(CanSetLanguage(snapshot) ? kPanelRaised : kPanel));
-    SkPaint language_border = Fill(CanSetLanguage(snapshot) ? kAccent : kBorder);
-    language_border.setStyle(SkPaint::kStroke_Style);
-    language_border.setStrokeWidth(1.0F);
-    canvas->drawRoundRect(window_state.language_button, 12.0F, 12.0F, language_border);
-    DrawCenteredText(
+        SkRect::MakeXYWH(
+            state.language_badge.left() + 0.5F,
+            state.language_badge.top() + 0.5F,
+            state.language_badge.width() - 1.0F,
+            state.language_badge.height() - 1.0F),
+        7.0F,
+        7.0F,
+        border);
+    DrawText(
         *canvas,
-        language_label,
-        window_state.language_button,
-        pill_font,
-        CanSetLanguage(snapshot) ? kText : kMuted,
-        4.0F);
-
-    const float cards_width = static_cast<float>(width) - margin * 2.0F;
-    const SkRect raw_card = SkRect::MakeXYWH(margin, 140.0F, cards_width, 188.0F);
-    const SkRect clean_card = SkRect::MakeXYWH(margin, 348.0F, cards_width, std::max(150.0F, static_cast<float>(height) - 478.0F));
-    DrawTranscriptCard(
-        *canvas,
-        raw_card,
-        "LIVE TRANSCRIPT",
-        snapshot.live_text,
-        snapshot.mode == app::DictationMode::Recording
-            ? "Listening for speech..."
-            : "Your cumulative Nemotron transcript appears here while you speak.",
-        label_font,
-        body_font,
-        kText,
-        snapshot.mode == app::DictationMode::Recording || snapshot.mode == app::DictationMode::Finalizing,
-        glfwGetTime());
-    DrawTranscriptCard(
-        *canvas,
-        clean_card,
-        "LIVE CLEANUP",
-        snapshot.rewritten_text,
-        snapshot.rewrite_in_progress
-            ? "Cleaning the latest available transcript locally..."
-            : "The debounced llama.cpp cleanup appears here while you continue speaking.",
-        label_font,
-        body_font,
-        kText,
-        snapshot.rewrite_in_progress,
-        glfwGetTime());
-
-    const float button_y = static_cast<float>(height) - 91.0F;
-    window_state.primary_button = SkRect::MakeXYWH(margin, button_y, cards_width, 54.0F);
-    const bool enabled = CanToggle(snapshot);
-    const SkColor button_color = snapshot.mode == app::DictationMode::Recording
-        ? kRecording
-        : (enabled ? kAccent : kPanelRaised);
-    canvas->drawRoundRect(window_state.primary_button, 15.0F, 15.0F, Fill(button_color));
-    DrawCenteredText(
-        *canvas,
-        PrimaryButtonLabel(snapshot),
-        window_state.primary_button,
-        button_font,
-        enabled ? kText : kMuted);
-
-    if (CanCancel(snapshot)) {
-        window_state.cancel_button = SkRect::MakeXYWH(
-            window_state.primary_button.right() - 86.0F,
-            window_state.primary_button.top() + 9.0F,
-            74.0F,
-            36.0F);
-        canvas->drawRoundRect(window_state.cancel_button, 12.0F, 12.0F, Fill(kPanel));
-        DrawCenteredText(*canvas, "Cancel", window_state.cancel_button, pill_font, kText, 4.0F);
+        LanguageBadge(state.snapshot),
+        state.language_badge.left() + 9.0F,
+        30.5F,
+        badge_font,
+        kMuted);
+    const float chevron_x = state.language_badge.right() - 12.0F;
+    SkPaint chevron = Fill(kMuted);
+    chevron.setStyle(SkPaint::kStroke_Style);
+    chevron.setStrokeWidth(1.4F);
+    if (state.language_menu_open) {
+        canvas->drawLine(chevron_x - 3.0F, 27.0F, chevron_x, 24.0F, chevron);
+        canvas->drawLine(chevron_x, 24.0F, chevron_x + 3.0F, 27.0F, chevron);
     } else {
-        window_state.cancel_button = SkRect::MakeEmpty();
+        canvas->drawLine(chevron_x - 3.0F, 24.0F, chevron_x, 27.0F, chevron);
+        canvas->drawLine(chevron_x, 27.0F, chevron_x + 3.0F, 24.0F, chevron);
     }
 
-    if (!snapshot.error.empty()) {
-        const SkRect error_bar = SkRect::MakeXYWH(margin, 94.0F, cards_width, 35.0F);
-        canvas->drawRoundRect(error_bar, 10.0F, 10.0F, Fill(SkColorSetRGB(70, 43, 31)));
-        DrawWrappedText(*canvas, snapshot.error, error_bar.left() + 12.0F, error_bar.top() + 22.0F,
-            error_bar.width() - 24.0F, 18.0F, 1, pill_font, kWarning);
+    const float meter_start_x = logical_width - 132.0F;
+    for (std::size_t index = 0; index < state.level_history.size(); ++index) {
+        const float level = state.level_history[index];
+        const float bar_height = 3.0F + level * 23.0F;
+        const float x = meter_start_x + static_cast<float>(index) * 6.6F;
+        canvas->drawRoundRect(
+            SkRect::MakeXYWH(x, 26.0F - bar_height * 0.5F, 3.0F, bar_height),
+            1.5F,
+            1.5F,
+            Fill(level > 0.08F ? status_color : kSubtle));
+    }
+    canvas->drawLine(24.0F, kHeaderHeight - 1.0F, logical_width - 24.0F, kHeaderHeight - 1.0F, border);
+
+    const std::string display = DisplayText(state.snapshot);
+    const std::string body = display.empty() ? PlaceholderText(state.snapshot) : display;
+    const auto lines = WrapText(body, body_font, logical_width - 78.0F);
+    const float body_bottom = logical_height - kFooterHeight - 16.0F;
+    state.visible_line_count = std::max(
+        1, static_cast<int>(std::floor((body_bottom - kBodyTop) / kBodyLineHeight)));
+    state.max_scroll_line = std::max(0, static_cast<int>(lines.size()) - state.visible_line_count);
+    state.scroll_line = std::clamp(state.scroll_line, 0, state.max_scroll_line);
+    if (state.snapshot.mode == app::DictationMode::Recording) {
+        state.scroll_line = state.max_scroll_line;
     }
 
+    canvas->save();
+    canvas->clipRect(SkRect::MakeLTRB(24.0F, kBodyTop - 16.0F, logical_width - 30.0F, body_bottom));
+    float baseline = kBodyTop;
+    const int last_line = std::min(
+        static_cast<int>(lines.size()), state.scroll_line + state.visible_line_count);
+    for (int index = state.scroll_line; index < last_line; ++index) {
+        DrawText(
+            *canvas,
+            lines[static_cast<std::size_t>(index)],
+            28.0F,
+            baseline,
+            body_font,
+            state.snapshot.mode == app::DictationMode::Error ? kWarning :
+                (display.empty() ? kMuted : kText));
+        baseline += kBodyLineHeight;
+    }
     canvas->restore();
-    surface.present(window);
-}
 
-void KeyCallback(GLFWwindow* window, int key, int, int action, int) {
-    if (action != GLFW_PRESS) return;
-    auto* state = static_cast<WindowState*>(glfwGetWindowUserPointer(window));
-    if (!state || !state->controller) return;
-    const auto snapshot = state->controller->snapshot();
-    if (key == GLFW_KEY_ENTER || key == GLFW_KEY_SPACE) {
-        if (CanToggle(snapshot)) state->controller->toggle_recording();
-    } else if (key == GLFW_KEY_ESCAPE) {
-        if (CanCancel(snapshot)) {
-            state->controller->cancel_recording();
-        } else {
-            glfwSetWindowShouldClose(window, GLFW_TRUE);
-        }
-    } else if (key == GLFW_KEY_L && CanSetLanguage(snapshot)) {
-        state->controller->set_language(NextLanguage(snapshot));
+    if (state.max_scroll_line > 0) {
+        const float track_top = kBodyTop - 14.0F;
+        const float track_bottom = body_bottom - 2.0F;
+        const float track_height = track_bottom - track_top;
+        const float ratio = static_cast<float>(state.visible_line_count) /
+            static_cast<float>(lines.size());
+        const float thumb_height = std::max(34.0F, track_height * ratio);
+        const float available = track_height - thumb_height;
+        const float thumb_top = track_top + available *
+            static_cast<float>(state.scroll_line) / static_cast<float>(state.max_scroll_line);
+        canvas->drawRoundRect(
+            SkRect::MakeXYWH(logical_width - 18.0F, track_top, 3.0F, track_height),
+            1.5F,
+            1.5F,
+            Fill(kSurface));
+        canvas->drawRoundRect(
+            SkRect::MakeXYWH(logical_width - 19.0F, thumb_top, 5.0F, thumb_height),
+            2.5F,
+            2.5F,
+            Fill(kMuted));
     }
+
+    const float footer_top = logical_height - kFooterHeight;
+    canvas->drawRect(
+        SkRect::MakeXYWH(0.0F, footer_top, logical_width, kFooterHeight), Fill(kSurface));
+    const auto draw_keycap = [&](float x, float key_width, std::string_view key) {
+        const float y = footer_top + 12.0F;
+        canvas->drawRoundRect(SkRect::MakeXYWH(x, y, key_width, 30.0F), 7.0F, 7.0F, Fill(kElevated));
+        canvas->drawRoundRect(
+            SkRect::MakeXYWH(x + 0.5F, y + 0.5F, key_width - 1.0F, 29.0F),
+            7.0F,
+            7.0F,
+            border);
+        DrawText(
+            *canvas,
+            key,
+            x + (key_width - TextWidth(key_font, key)) * 0.5F,
+            y + 20.0F,
+            key_font,
+            kText);
+    };
+    const float key_y = footer_top + 12.0F;
+    if (state.snapshot.mode == app::DictationMode::Recording) {
+        draw_keycap(24.0F, 58.0F, "Enter");
+        DrawText(*canvas, "Finish & insert", 94.0F, key_y + 20.0F, hint_font, kMuted);
+        draw_keycap(logical_width - 174.0F, 44.0F, "Esc");
+        DrawText(*canvas, "Cancel", logical_width - 118.0F, key_y + 20.0F, hint_font, kMuted);
+    } else if (state.snapshot.mode == app::DictationMode::Finalizing) {
+        const char* progress = state.snapshot.status.find("Switching") != std::string::npos
+            ? "Switching language..."
+            : "Finalizing locally...";
+        DrawText(*canvas, progress, 28.0F, key_y + 20.0F, hint_font, kMuted);
+    } else {
+        draw_keycap(24.0F, 124.0F, "Ctrl Alt Space");
+        DrawText(*canvas, "Start dictation", 160.0F, key_y + 20.0F, hint_font, kMuted);
+    }
+
+    if (state.language_menu_open) {
+        state.language_menu = LanguageMenuRect(state.snapshot);
+        canvas->drawRoundRect(state.language_menu, 9.0F, 9.0F, Fill(kElevated));
+        canvas->drawRoundRect(
+            SkRect::MakeXYWH(
+                state.language_menu.left() + 0.5F,
+                state.language_menu.top() + 0.5F,
+                state.language_menu.width() - 1.0F,
+                state.language_menu.height() - 1.0F),
+            9.0F,
+            9.0F,
+            border);
+        const std::array<std::string_view, 3> labels = {
+            "Automatic detection", "Deutsch", "English"};
+        const int selected = state.snapshot.language == "de" ? 1 :
+            (state.snapshot.language == "en" ? 2 : 0);
+        for (int option = 0; option < 3; ++option) {
+            const SkRect item = LanguageOptionRect(state.snapshot, option);
+            if (option == selected) {
+                canvas->drawRoundRect(item, 6.0F, 6.0F, Fill(SkColorSetRGB(42, 39, 66)));
+            }
+            canvas->drawCircle(
+                item.left() + 14.0F,
+                item.centerY(),
+                option == selected ? 3.5F : 2.0F,
+                Fill(option == selected ? kAccent : kSubtle));
+            DrawText(
+                *canvas,
+                labels[static_cast<std::size_t>(option)],
+                item.left() + 27.0F,
+                item.centerY() + 4.5F,
+                menu_font,
+                option == selected ? kText : kMuted);
+        }
+    } else {
+        state.language_menu = SkRect::MakeEmpty();
+    }
+
+    canvas->drawRoundRect(
+        SkRect::MakeXYWH(0.5F, 0.5F, logical_width - 1.0F, logical_height - 1.0F),
+        8.0F,
+        8.0F,
+        border);
+    canvas->restore();
+    surface.present(state.window);
 }
 
 void MouseButtonCallback(GLFWwindow* window, int button, int action, int) {
-    if (button != GLFW_MOUSE_BUTTON_LEFT || action != GLFW_PRESS) return;
+    if (button != GLFW_MOUSE_BUTTON_LEFT) return;
     auto* state = static_cast<WindowState*>(glfwGetWindowUserPointer(window));
-    if (!state || !state->controller) return;
+    if (!state) return;
     double x = 0.0;
     double y = 0.0;
     glfwGetCursorPos(window, &x, &y);
-    const auto snapshot = state->controller->snapshot();
-    if (state->language_button.contains(static_cast<float>(x), static_cast<float>(y)) &&
-        CanSetLanguage(snapshot)) {
-        state->controller->set_language(NextLanguage(snapshot));
-    } else if (state->cancel_button.contains(static_cast<float>(x), static_cast<float>(y))) {
-        state->controller->cancel_recording();
-    } else if (state->primary_button.contains(static_cast<float>(x), static_cast<float>(y)) &&
-               CanToggle(snapshot)) {
-        state->controller->toggle_recording();
+
+    if (action == GLFW_PRESS) {
+        if (state->language_badge.contains(static_cast<float>(x), static_cast<float>(y))) {
+            state->language_menu_open = !state->language_menu_open;
+            return;
+        }
+        if (state->language_menu_open) {
+            for (int option = 0; option < 3; ++option) {
+                if (LanguageOptionRect(state->snapshot, option).contains(
+                        static_cast<float>(x), static_cast<float>(y))) {
+                    SelectLanguage(*state, option);
+                    state->language_menu_open = false;
+                    return;
+                }
+            }
+            state->language_menu_open = false;
+        }
+        if (y < kHeaderHeight) {
+            state->dragging = state->desktop.pointer_position(
+                state->drag_pointer_x, state->drag_pointer_y);
+            if (state->dragging) {
+                glfwGetWindowPos(window, &state->drag_window_x, &state->drag_window_y);
+            }
+        }
+    } else if (action == GLFW_RELEASE) {
+        state->dragging = false;
     }
+}
+
+void CursorPositionCallback(GLFWwindow* window, double, double) {
+    auto* state = static_cast<WindowState*>(glfwGetWindowUserPointer(window));
+    if (!state || !state->dragging) return;
+    int pointer_x = 0;
+    int pointer_y = 0;
+    if (!state->desktop.pointer_position(pointer_x, pointer_y)) return;
+    glfwSetWindowPos(
+        window,
+        state->drag_window_x + pointer_x - state->drag_pointer_x,
+        state->drag_window_y + pointer_y - state->drag_pointer_y);
+}
+
+void ScrollCallback(GLFWwindow* window, double, double y_offset) {
+    auto* state = static_cast<WindowState*>(glfwGetWindowUserPointer(window));
+    if (!state || state->max_scroll_line <= 0) return;
+    state->scroll_line = std::clamp(
+        state->scroll_line - static_cast<int>(std::round(y_offset * 2.0)),
+        0,
+        state->max_scroll_line);
 }
 
 } // namespace
@@ -386,7 +642,7 @@ int RunDictationWindow(app::AppController& controller) {
         std::cerr << "GLFW: " << description << '\n';
     });
     if (!glfwInit()) {
-        std::cerr << "Could not initialize GLFW. Is a graphical session available?\n";
+        std::cerr << "Could not initialize GLFW. Is an X11 graphical session available?\n";
         return 1;
     }
 
@@ -395,14 +651,20 @@ int RunDictationWindow(app::AppController& controller) {
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_STENCIL_BITS, 8);
+    glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
+    glfwWindowHint(GLFW_FLOATING, GLFW_TRUE);
+    glfwWindowHint(GLFW_FOCUS_ON_SHOW, GLFW_FALSE);
+    glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER, GLFW_TRUE);
+    glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
     glfwWindowHintString(GLFW_X11_CLASS_NAME, "dictscribe");
     glfwWindowHintString(GLFW_X11_INSTANCE_NAME, "dictscribe");
-    GLFWwindow* window = glfwCreateWindow(900, 650, "DictScribe - Live Dictation", nullptr, nullptr);
+    GLFWwindow* window = glfwCreateWindow(
+        kLogicalWidth, kMinimumLogicalHeight, "DictScribe", nullptr, nullptr);
     if (!window) {
         glfwTerminate();
         return 1;
     }
-    glfwSetWindowSizeLimits(window, 760, 580, GLFW_DONT_CARE, GLFW_DONT_CARE);
+    ConfigureOverlayWindow(window);
 
     SkiaSurface surface;
     if (!surface.initialize(window)) {
@@ -414,8 +676,8 @@ int RunDictationWindow(app::AppController& controller) {
 
     const auto font_manager = SkFontMgr_New_FontConfig(nullptr, SkFontScanner_Make_FreeType());
     const auto regular = font_manager ? FindTypeface(font_manager, SkFontStyle::Normal()) : nullptr;
-    const auto bold = font_manager ? FindTypeface(font_manager, SkFontStyle::Bold()) : nullptr;
-    if (!regular || !bold) {
+    const auto semibold = font_manager ? FindTypeface(font_manager, SkFontStyle::Bold()) : nullptr;
+    if (!regular || !semibold) {
         std::cerr << "Could not initialize a system typeface.\n";
         surface.shutdown();
         glfwDestroyWindow(window);
@@ -423,17 +685,84 @@ int RunDictationWindow(app::AppController& controller) {
         return 1;
     }
 
-    WindowState window_state{.controller = &controller};
-    glfwSetWindowUserPointer(window, &window_state);
-    glfwSetKeyCallback(window, KeyCallback);
-    glfwSetMouseButtonCallback(window, MouseButtonCallback);
-
-    while (!glfwWindowShouldClose(window)) {
-        controller.tick();
-        Render(window, surface, window_state, regular, bold);
-        glfwWaitEventsTimeout(1.0 / 30.0);
+    WindowState state;
+    state.controller = &controller;
+    state.window = window;
+    state.snapshot = controller.snapshot();
+    std::string desktop_error;
+    if (!state.desktop.initialize(glfwGetX11Window(window), desktop_error)) {
+        std::cerr << desktop_error << '\n';
+        surface.shutdown();
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return 1;
     }
 
+    glfwSetWindowUserPointer(window, &state);
+    glfwSetMouseButtonCallback(window, MouseButtonCallback);
+    glfwSetCursorPosCallback(window, CursorPositionCallback);
+    glfwSetScrollCallback(window, ScrollCallback);
+    std::cerr << "DictScribe is ready in the background. Ctrl+Alt+Space toggles dictation; "
+                 "Ctrl+Alt+Q quits.\n";
+
+    while (!glfwWindowShouldClose(window)) {
+        for (const auto command : state.desktop.poll_commands()) {
+            switch (command) {
+            case linux_x11::DesktopCommand::Toggle:
+            case linux_x11::DesktopCommand::Accept:
+                if (state.session_active) {
+                    const auto candidate = state.desktop.capture_target();
+                    if (candidate.valid()) state.target = candidate;
+                }
+                ToggleDictation(state, regular);
+                break;
+            case linux_x11::DesktopCommand::Cancel:
+                CancelDictation(state);
+                break;
+            case linux_x11::DesktopCommand::Quit:
+                glfwSetWindowShouldClose(window, GLFW_TRUE);
+                break;
+            }
+        }
+
+        if (state.session_active) {
+            const auto candidate = state.desktop.capture_target();
+            if (candidate.valid()) state.target = candidate;
+        }
+        controller.tick();
+        state.snapshot = controller.snapshot();
+        UpdateLevelHistory(state);
+
+        if (state.session_active && state.snapshot.mode == app::DictationMode::Complete) {
+            state.session_active = false;
+            state.desktop.set_session_hotkeys(false);
+            HideOverlay(state);
+            const std::string& text = !state.snapshot.rewritten_text.empty()
+                ? state.snapshot.rewritten_text
+                : (!state.snapshot.raw_final_text.empty()
+                    ? state.snapshot.raw_final_text
+                    : state.snapshot.live_text);
+            std::string error;
+            if (!state.desktop.insert_text(state.target, text, error)) {
+                std::cerr << "DictScribe insertion: " << error << '\n';
+            }
+        } else if (state.session_active && state.snapshot.mode == app::DictationMode::Error) {
+            state.session_active = false;
+            state.desktop.set_session_hotkeys(false);
+        }
+
+        if (glfwGetWindowAttrib(window, GLFW_VISIBLE)) {
+            const int desired_height = DesiredHeight(state.snapshot, regular);
+            if (desired_height != state.rendered_height) {
+                state.rendered_height = desired_height;
+                glfwSetWindowSize(window, kLogicalWidth, desired_height);
+            }
+            Render(surface, state, regular, semibold);
+        }
+        glfwWaitEventsTimeout(1.0 / 60.0);
+    }
+
+    state.desktop.shutdown();
     surface.shutdown();
     glfwDestroyWindow(window);
     glfwTerminate();
