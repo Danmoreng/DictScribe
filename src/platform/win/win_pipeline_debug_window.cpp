@@ -1,4 +1,5 @@
 #include "platform/win/win_pipeline_debug_window.hpp"
+#include "platform/win/resource.h"
 
 #include <dwmapi.h>
 #include <richedit.h>
@@ -201,6 +202,10 @@ bool WinPipelineDebugWindow::create(HINSTANCE instance, std::string& error) {
     window_class.lpszClassName = kWindowClass;
     window_class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     window_class.hbrBackground = impl_->window_brush;
+    window_class.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(IDI_DICTSCRIBE));
+    window_class.hIconSm = static_cast<HICON>(LoadImageW(
+        instance, MAKEINTRESOURCEW(IDI_DICTSCRIBE), IMAGE_ICON,
+        GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_SHARED));
     if (!RegisterClassExW(&window_class) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
         error = "Could not register the DictScribe pipeline debugger window.";
         return false;

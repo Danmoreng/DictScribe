@@ -11,6 +11,7 @@
 #include "app/settings.hpp"
 #include "platform/win/win_overlay.hpp"
 #include "platform/win/win_pipeline_debug_window.hpp"
+#include "platform/win/resource.h"
 #include "platform/win/win_settings_window.hpp"
 #include "platform/win/win_text_injector.hpp"
 
@@ -132,7 +133,10 @@ public:
         window_class.hInstance = instance;
         window_class.lpfnWndProc = WindowProc;
         window_class.lpszClassName = kControlWindowClass;
-        window_class.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+        window_class.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(IDI_DICTSCRIBE));
+        window_class.hIconSm = static_cast<HICON>(LoadImageW(
+            instance, MAKEINTRESOURCEW(IDI_DICTSCRIBE), IMAGE_ICON,
+            GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_SHARED));
         if (!RegisterClassExW(&window_class) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
             MessageBoxW(nullptr, L"Could not register the DictScribe control window.", L"DictScribe", MB_ICONERROR);
             return false;
@@ -361,7 +365,7 @@ private:
         icon.uID = 1;
         icon.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP | NIF_SHOWTIP;
         icon.uCallbackMessage = kTrayMessage;
-        icon.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+        icon.hIcon = LoadIconW(instance_, MAKEINTRESOURCEW(IDI_DICTSCRIBE));
         wcscpy_s(icon.szTip, L"DictScribe — Ctrl+Alt+Space");
         Shell_NotifyIconW(NIM_ADD, &icon);
         icon.uVersion = NOTIFYICON_VERSION_4;

@@ -1,4 +1,5 @@
 #include "platform/win/win_settings_window.hpp"
+#include "platform/win/resource.h"
 
 #include <utility>
 
@@ -203,6 +204,10 @@ bool WinSettingsWindow::create(HINSTANCE instance, std::string& error) {
     window_class.lpfnWndProc = Impl::WindowProc;
     window_class.lpszClassName = kSettingsClass;
     window_class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    window_class.hIcon = LoadIconW(instance, MAKEINTRESOURCEW(IDI_DICTSCRIBE));
+    window_class.hIconSm = static_cast<HICON>(LoadImageW(
+        instance, MAKEINTRESOURCEW(IDI_DICTSCRIBE), IMAGE_ICON,
+        GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_SHARED));
     if (!RegisterClassExW(&window_class) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
         error = "Could not register the DictScribe settings window.";
         return false;

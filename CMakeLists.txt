@@ -133,6 +133,7 @@ if(DICTSCRIBE_BUILD_UI)
             message(FATAL_ERROR "SKIA_OUT_DIR does not contain skia.lib")
         endif()
         add_executable(dictscribe WIN32
+            src/platform/win/dictscribe.rc
             src/platform/win/win_main.cpp
             src/platform/win/win_overlay.cpp
             src/platform/win/win_pipeline_debug_window.cpp
