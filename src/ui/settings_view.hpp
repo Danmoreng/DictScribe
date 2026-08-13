@@ -17,6 +17,8 @@ enum class SettingsAction {
     LanguageAuto,
     LanguageGerman,
     LanguageEnglish,
+    CleanupOff,
+    CleanupAi,
     AsrCpu,
     AsrGpu,
     RewriteCpu,
@@ -36,6 +38,8 @@ struct SettingsViewLayout {
     SkRect language_auto;
     SkRect language_german;
     SkRect language_english;
+    SkRect cleanup_off;
+    SkRect cleanup_ai;
     SkRect asr_cpu;
     SkRect asr_gpu;
     SkRect rewrite_cpu;

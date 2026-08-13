@@ -1,5 +1,29 @@
 # Implementation notes
 
+## 2026-08-13: lazy cleanup lifecycle and bounded controller
+
+Cleanup is now a persisted two-state setting. `Off` is the default and starts
+only the ASR worker; the rewrite executable and model are optional in this mode.
+Selecting `AI cleanup` starts Qwen on demand without blocking recording or ASR
+readiness. Disabling cleanup terminates the rewrite worker, and model load,
+generation, validation, timeout, or worker failures retain a fully usable raw
+dictation path.
+
+The controller no longer sends cumulative whole transcripts to the rewrite
+worker. A model-independent `SemanticTranscript` owns frozen output, a bounded
+editable tail, immutable stable ASR spans, and the unstable cumulative suffix.
+It conservatively promotes only text confirmed across later hypotheses while
+protecting the latest words. Requests use protocol version 2, bounded context
+and new-ASR fields, stable-span IDs, session generation, and tail revision.
+Append-only ASR updates do not invalidate an active request; changes to the
+captured tail or spans do. One active request and one coalesced successor are
+allowed. A detected revision inside already promoted ASR text disables cleanup
+for that dictation and returns to the complete raw transcript.
+
+Finalization and language changes preserve every raw ASR segment. Enter never
+waits for Qwen, late results from completed or cancelled sessions are ignored,
+and long inputs are split into bounded stable spans before dispatch.
+
 ## 2026-08-13: shared settings and independent worker devices
 
 Windows and Linux now render the same Skia settings surface from their native
@@ -30,7 +54,7 @@ cannot be done safely, it remains available on the clipboard. Explicit line
 breaks are preserved by the Linux wrapper in preparation for structured
 semantic cleanup output.
 
-## 2026-08-12: incremental cleanup direction
+## 2026-08-12: incremental cleanup direction (implemented in Phase 3)
 
 The current cumulative whole-transcript live rewrite is a prototype, not the
 intended production architecture. The agreed replacement uses a frozen prefix,
@@ -106,14 +130,12 @@ longer calls those components. It uses a version-2 structured tail request,
 grammar-constrained JSON output, greedy decoding, and raw ASR fallback for
 every rewrite failure. Technical literals remain protected and restored.
 
-Live cleanup is scheduled in the controller from cumulative Nemotron partials.
+Live cleanup is scheduled only from conservatively stabilized Nemotron spans.
 Updates are coalesced for 700 ms but forced after at most two seconds of
-continuous changes. Only one llama.cpp request may be in flight; newer partials
-replace the single pending snapshot instead of accumulating a queue. Completed
-live rewrites update the lower debugging panel without leaving the recording
-state. Finalization never waits for a cleanup request. A completed rewrite is
-used at insertion only when it belongs to the exact final ASR snapshot;
-otherwise the complete raw final transcript wins.
+continuous stable input. Only one llama.cpp request may be in flight; newer
+stable spans form one coalesced successor instead of accumulating a queue.
+Finalization never waits for a cleanup request, and all unprocessed final ASR
+text is appended raw.
 The initial 4B Q8_0 rewrite model could not keep up with live dictation on the
 development CPU. Runtime discovery is now fixed to the benchmark candidate
 `Qwen3.5-0.8B-Q8_0.gguf` in the standard Hugging Face Hub cache. No other GGUF is

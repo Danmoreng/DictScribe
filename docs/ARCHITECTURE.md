@@ -1,8 +1,8 @@
 # Architecture
 
-DictScribe uses one lightweight desktop controller and two persistent inference
-workers. Process isolation is a correctness boundary, not a network-service
-architecture.
+DictScribe uses one lightweight desktop controller, one persistent ASR worker,
+and an optional lazily loaded rewrite worker. Process isolation is a correctness
+boundary, not a network-service architecture.
 
 ```text
 Desktop controller
@@ -38,8 +38,15 @@ No audio is persisted or transferred to the controller. The rewrite worker owns
 one loaded GGUF model and accepts text-only rewrite jobs. Standard output is
 reserved for protocol messages; diagnostics use standard error.
 
-The controller coalesces cumulative ASR partials into bounded live rewrite
-jobs. At most one rewrite is active and one newer snapshot is pending, so slow
-CPU inference cannot create an unbounded queue. The raw ASR text and latest
-completed cleanup remain separate controller state for debugging and UI
-rendering. An optional final pass can be disabled independently of live cleanup.
+The controller stabilizes cumulative ASR hypotheses into immutable spans. It
+owns frozen output, a bounded editable tail, a stable raw backlog, and the
+current unstable ASR suffix. Rewrite requests contain at most a short read-only
+suffix, 192 approximate editable tokens, and 128 approximate new-ASR tokens,
+with independent byte limits. At most one rewrite is active and one newer state
+is coalesced, so slow inference cannot create an unbounded queue.
+
+Stopping never waits for cleanup and there is no final whole-transcript pass.
+The controller composes accepted cleanup with all remaining raw text
+immediately. `Off` is the default cleanup mode and does not discover, start, or
+load the rewrite worker. Enabling `AI cleanup` starts it on demand; every rewrite
+failure falls open to raw ASR without affecting speech recognition.

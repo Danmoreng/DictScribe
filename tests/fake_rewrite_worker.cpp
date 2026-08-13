@@ -8,7 +8,7 @@
 namespace {
 
 void emit(nlohmann::json message) {
-    message["v"] = 1;
+    if (!message.contains("v")) message["v"] = 1;
     std::cout << message.dump() << '\n' << std::flush;
 }
 
@@ -38,9 +38,11 @@ int main(int argc, char** argv) {
     while (std::getline(std::cin, line)) {
         const auto command = nlohmann::json::parse(line);
         const std::string type = command.value("type", "");
-        if (type == "rewrite") {
+        if (type == "rewrite_tail") {
             const std::string request = command.value("requestId", "");
-            emit({{"type", "command_ack"}, {"requestId", request}});
+            emit({
+                {"v", 2}, {"type", "command_ack"}, {"command", "rewrite_tail"},
+                {"requestId", request}});
             std::this_thread::sleep_for(std::chrono::milliseconds(120));
             if (fail_rewrite) {
                 emit({
@@ -51,11 +53,29 @@ int main(int argc, char** argv) {
                 });
                 continue;
             }
+            std::string replacement = command.value("editableTail", "");
+            const std::string incoming = command.value("newAsrText", "");
+            if (!replacement.empty() && !incoming.empty() &&
+                replacement.back() != ' ' && incoming.front() != ' ') {
+                replacement.push_back(' ');
+            }
+            replacement += incoming;
             emit({
-                {"type", "rewrite_completed"},
+                {"v", 2},
+                {"type", "rewrite_tail_completed"},
                 {"id", command.value("id", "")},
                 {"requestId", request},
-                {"text", command.value("language", "") + ":" + command.value("text", "")},
+                {"sessionId", command.value("sessionId", "")},
+                {"tailRevision", command.value("tailRevision", 0)},
+                {"firstStableSpanId", command.value("firstStableSpanId", 0)},
+                {"lastStableSpanId", command.value("lastStableSpanId", 0)},
+                {"replacementTail", replacement},
+            });
+        } else if (type == "rewrite") {
+            emit({
+                {"type", "error"}, {"code", "LEGACY_REWRITE_USED"},
+                {"message", "controller used legacy whole-transcript rewrite"},
+                {"recoverable", false},
             });
         } else if (type == "shutdown") {
             emit({{"type", "shutdown_complete"}});

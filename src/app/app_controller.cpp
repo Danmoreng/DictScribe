@@ -1,7 +1,6 @@
 #include "app/app_controller.hpp"
 
 #include <algorithm>
-#include <cctype>
 #include <chrono>
 #include <utility>
 
@@ -11,19 +10,10 @@ namespace {
 
 constexpr auto kLiveCleanupDebounce = std::chrono::milliseconds(700);
 constexpr auto kLiveCleanupMaximumDelay = std::chrono::milliseconds(2000);
+constexpr auto kRewriteTimeout = std::chrono::seconds(5);
 
 std::string FileName(const std::filesystem::path& path) {
     return path.filename().string();
-}
-
-std::string AppendTranscript(const std::string& prefix, const std::string& text) {
-    if (prefix.empty()) return text;
-    if (text.empty()) return prefix;
-    if (std::isspace(static_cast<unsigned char>(prefix.back())) ||
-        std::isspace(static_cast<unsigned char>(text.front()))) {
-        return prefix + text;
-    }
-    return prefix + " " + text;
 }
 
 } // namespace
@@ -48,19 +38,16 @@ bool AppController::start(const AppConfig& config) {
         state_.asr_model_name = FileName(config.asr_model);
         state_.rewrite_model_name = FileName(config.rewrite_model);
         state_.language = config.language;
+        state_.cleanup_mode = config.cleanup_mode;
         state_.asr_use_gpu = config.asr_use_gpu;
         state_.rewrite_use_gpu = config.rewrite_use_gpu;
-        rewrite_in_flight_ = false;
         rewrite_unavailable_ = false;
         language_restart_pending_ = false;
-        pending_live_cleanup_ = false;
-        active_rewrite_id_.clear();
-        active_rewrite_session_id_.clear();
-        active_rewrite_source_.clear();
-        last_completed_rewrite_source_.clear();
+        rewrite_pending_ = false;
+        active_rewrite_.reset();
         session_id_.clear();
-        session_prefix_.clear();
-        current_session_text_.clear();
+        dictation_id_.clear();
+        transcript_.reset(0);
     }
 
     std::string error;
@@ -69,57 +56,34 @@ bool AppController::start(const AppConfig& config) {
         set_error_locked(std::move(error));
         return false;
     }
-    if (!start_rewrite_worker(config, error)) {
+    if (config.cleanup_mode == CleanupMode::Ai && !start_rewrite_worker(config, error)) {
         std::lock_guard lock(mutex_);
         rewrite_unavailable_ = true;
         state_.rewrite_ready = false;
         state_.error = std::move(error);
-        update_ready_state_locked();
     }
     return true;
 }
 
 bool AppController::start_asr_worker(const AppConfig& config, std::string& error) {
-    std::vector<std::string> asr_arguments = {
-        "--stdio",
-        "--model",
-        config.asr_model.string(),
-        "--protocol-version",
-        "1",
-    };
-    if (config.asr_use_gpu) {
-        asr_arguments.push_back("--gpu");
-    }
-    if (!asr_.start(
-            config.asr_worker.string(),
-            asr_arguments,
-            [this](const nlohmann::json& message) { handle_asr_message(message); },
-            error)) {
-        return false;
-    }
-    return true;
+    std::vector<std::string> arguments = {
+        "--stdio", "--model", config.asr_model.string(), "--protocol-version", "1"};
+    if (config.asr_use_gpu) arguments.push_back("--gpu");
+    return asr_.start(
+        config.asr_worker.string(), arguments,
+        [this](const nlohmann::json& message) { handle_asr_message(message); }, error);
 }
 
 bool AppController::start_rewrite_worker(const AppConfig& config, std::string& error) {
-    std::vector<std::string> rewrite_arguments = {
-        "--stdio",
-        "--model",
-        config.rewrite_model.string(),
-        "--protocol-version",
-        "1",
-    };
+    std::vector<std::string> arguments = {
+        "--stdio", "--model", config.rewrite_model.string(), "--protocol-version", "2",
+        "--context-size", "2048"};
     if (config.rewrite_use_gpu) {
-        rewrite_arguments.insert(
-            rewrite_arguments.end(), {"--gpu-layers", "99"});
+        arguments.insert(arguments.end(), {"--gpu-layers", "99"});
     }
-    if (!rewrite_.start(
-            config.rewrite_worker.string(),
-            rewrite_arguments,
-            [this](const nlohmann::json& message) { handle_rewrite_message(message); },
-            error)) {
-        return false;
-    }
-    return true;
+    return rewrite_.start(
+        config.rewrite_worker.string(), arguments,
+        [this](const nlohmann::json& message) { handle_rewrite_message(message); }, error);
 }
 
 void AppController::set_startup_error(std::string message) {
@@ -133,57 +97,52 @@ void AppController::toggle_recording() {
         start_recording_locked(true);
         return;
     }
+    if (state_.mode != DictationMode::Recording) return;
 
-    if (state_.mode == DictationMode::Recording) {
-        std::string error;
-        state_.mode = DictationMode::Finalizing;
-        state_.audio_rms = 0.0F;
-        state_.audio_peak = 0.0F;
-        state_.status = "Finalizing speech recognition...";
-        if (!asr_.send({
-                {"v", 1},
-                {"type", "stop"},
-                {"id", next_id_locked("stop")},
-                {"sessionId", session_id_},
-            }, error)) {
-            set_error_locked(std::move(error));
-        }
+    std::string error;
+    state_.mode = DictationMode::Finalizing;
+    state_.audio_rms = 0.0F;
+    state_.audio_peak = 0.0F;
+    state_.status = "Finalizing speech recognition...";
+    if (!asr_.send({
+            {"v", 1}, {"type", "stop"}, {"id", next_id_locked("stop")},
+            {"sessionId", session_id_}}, error)) {
+        set_error_locked(std::move(error));
     }
 }
 
 bool AppController::start_recording_locked(bool clear_transcript) {
     if (clear_transcript) {
+        ++dictation_generation_;
+        transcript_.reset(dictation_generation_);
         state_.live_text.clear();
         state_.raw_final_text.clear();
         state_.rewritten_text.clear();
         state_.error.clear();
-        session_prefix_.clear();
-        last_completed_rewrite_source_.clear();
+        dictation_id_ = next_id_locked("dictation");
         language_restart_pending_ = false;
+        clear_active_rewrite_locked();
     }
-    current_session_text_.clear();
+    transcript_.begin_asr_segment();
     session_id_ = next_id_locked("session");
-    state_.rewrite_in_progress = rewrite_in_flight_;
     state_.audio_rms = 0.0F;
     state_.audio_peak = 0.0F;
-    pending_live_cleanup_ = false;
-    state_.mode = DictationMode::StartingRecording;
-    if (rewrite_unavailable_) {
-        state_.status = "Opening the microphone - AI cleanup is unavailable";
-    } else {
-        state_.status = clear_transcript
-            ? "Opening the default microphone..."
-            : "Restarting speech recognition with the selected language...";
+    if (clear_transcript) {
+        rewrite_pending_ = false;
+    } else if (state_.cleanup_mode == CleanupMode::Ai && transcript_.has_stable_backlog()) {
+        rewrite_pending_ = true;
+        rewrite_pending_since_ = std::chrono::steady_clock::now();
+        rewrite_due_ = rewrite_pending_since_;
     }
+    state_.mode = DictationMode::StartingRecording;
+    state_.status = state_.cleanup_mode == CleanupMode::Ai
+        ? "Opening the microphone - AI cleanup will start when ready"
+        : "Opening the default microphone...";
 
     std::string error;
     if (!asr_.send({
-            {"v", 1},
-            {"type", "start"},
-            {"id", next_id_locked("start")},
-            {"sessionId", session_id_},
-            {"language", state_.language},
-        }, error)) {
+            {"v", 1}, {"type", "start"}, {"id", next_id_locked("start")},
+            {"sessionId", session_id_}, {"language", state_.language}}, error)) {
         language_restart_pending_ = false;
         set_error_locked(std::move(error));
         return false;
@@ -198,18 +157,14 @@ bool AppController::stop_for_language_change_locked() {
         return true;
     }
     if (state_.mode != DictationMode::Recording) return false;
-
     state_.mode = DictationMode::Finalizing;
     state_.audio_rms = 0.0F;
     state_.audio_peak = 0.0F;
     state_.status = "Switching speech recognition language...";
     std::string error;
     if (!asr_.send({
-            {"v", 1},
-            {"type", "stop"},
-            {"id", next_id_locked("language-stop")},
-            {"sessionId", session_id_},
-        }, error)) {
+            {"v", 1}, {"type", "stop"}, {"id", next_id_locked("language-stop")},
+            {"sessionId", session_id_}}, error)) {
         language_restart_pending_ = false;
         set_error_locked(std::move(error));
         return false;
@@ -220,46 +175,79 @@ bool AppController::stop_for_language_change_locked() {
 void AppController::cancel_recording() {
     std::lock_guard lock(mutex_);
     if (state_.mode != DictationMode::Recording &&
-        state_.mode != DictationMode::StartingRecording) {
-        return;
-    }
-    std::string error;
+        state_.mode != DictationMode::StartingRecording) return;
     state_.mode = DictationMode::Cancelling;
     state_.audio_rms = 0.0F;
     state_.audio_peak = 0.0F;
     state_.status = "Cancelling dictation...";
+    std::string error;
     if (!asr_.send({
-            {"v", 1},
-            {"type", "cancel"},
-            {"id", next_id_locked("cancel")},
-            {"sessionId", session_id_},
-        }, error)) {
+            {"v", 1}, {"type", "cancel"}, {"id", next_id_locked("cancel")},
+            {"sessionId", session_id_}}, error)) {
         set_error_locked(std::move(error));
     }
 }
 
 void AppController::set_language(std::string language) {
     std::lock_guard lock(mutex_);
-    if (!CanSetLanguage(state_)) {
-        return;
-    }
-    if (language != "auto" && language != "de" && language != "en") {
-        return;
-    }
-    if (language == state_.language) return;
+    if (!CanSetLanguage(state_) ||
+        (language != "auto" && language != "de" && language != "en") ||
+        language == state_.language) return;
     state_.language = std::move(language);
     if (state_.mode == DictationMode::Recording ||
         state_.mode == DictationMode::StartingRecording) {
         stop_for_language_change_locked();
-        return;
-    }
-    if (state_.mode == DictationMode::Finalizing && language_restart_pending_) {
+    } else if (state_.mode == DictationMode::Finalizing && language_restart_pending_) {
         state_.status = "Switching speech recognition language...";
-        return;
-    }
-    if (state_.mode == DictationMode::Ready || state_.mode == DictationMode::Complete) {
+    } else if (state_.mode == DictationMode::Ready || state_.mode == DictationMode::Complete) {
         state_.status = "Language changed - ready for dictation";
     }
+}
+
+bool AppController::set_cleanup_mode(CleanupMode mode) {
+    AppConfig config;
+    bool stop_worker = false;
+    {
+        std::lock_guard lock(mutex_);
+        if (!CanSetCleanupMode(state_)) return false;
+        if (state_.cleanup_mode == mode) return true;
+        config_.cleanup_mode = mode;
+        config = config_;
+        state_.cleanup_mode = mode;
+        state_.error.clear();
+        rewrite_pending_ = false;
+        clear_active_rewrite_locked();
+        if (mode == CleanupMode::Off) {
+            state_.rewrite_ready = false;
+            rewrite_unavailable_ = false;
+            state_.status = "AI cleanup disabled - ready for raw dictation";
+            stop_worker = true;
+        } else {
+            rewrite_unavailable_ = false;
+            state_.status = "Starting AI cleanup model...";
+        }
+    }
+
+    if (stop_worker) {
+        std::string ignored;
+        rewrite_.send({{"v", 1}, {"type", "shutdown"}, {"id", "disable-rewrite"}}, ignored);
+        rewrite_.stop();
+        return true;
+    }
+    if (mode == CleanupMode::Ai && !rewrite_.running()) {
+        // Reap a previously failed lazy worker before reusing WorkerProcess.
+        // Its reader thread remains joinable after an unexpected process exit.
+        rewrite_.stop();
+        std::string error;
+        if (!start_rewrite_worker(config, error)) {
+            std::lock_guard lock(mutex_);
+            rewrite_unavailable_ = true;
+            state_.rewrite_ready = false;
+            state_.error = std::move(error);
+            state_.status = "AI cleanup unavailable - raw dictation remains ready";
+        }
+    }
+    return true;
 }
 
 bool AppController::set_asr_device(bool use_gpu) {
@@ -278,13 +266,11 @@ bool AppController::set_asr_device(bool use_gpu) {
             ? "Restarting speech recognition on GPU..."
             : "Restarting speech recognition on CPU...";
     }
-
     std::string ignored;
     if (asr_.running()) {
         asr_.send({{"v", 1}, {"type", "shutdown"}, {"id", "ui-restart-asr"}}, ignored);
     }
     asr_.stop();
-
     std::string error;
     if (!start_asr_worker(config, error)) {
         std::lock_guard lock(mutex_);
@@ -296,6 +282,7 @@ bool AppController::set_asr_device(bool use_gpu) {
 
 bool AppController::set_rewrite_device(bool use_gpu) {
     AppConfig config;
+    bool restart = false;
     {
         std::lock_guard lock(mutex_);
         if (!CanSetComputeDevice(state_)) return false;
@@ -303,47 +290,46 @@ bool AppController::set_rewrite_device(bool use_gpu) {
         config_.rewrite_use_gpu = use_gpu;
         config = config_;
         state_.rewrite_use_gpu = use_gpu;
+        restart = state_.cleanup_mode == CleanupMode::Ai;
+        if (!restart) return true;
         state_.rewrite_ready = false;
-        state_.rewrite_in_progress = false;
-        rewrite_in_flight_ = false;
-        active_rewrite_id_.clear();
-        active_rewrite_session_id_.clear();
-        active_rewrite_source_.clear();
-        last_completed_rewrite_source_.clear();
         rewrite_unavailable_ = false;
-        pending_live_cleanup_ = false;
-        state_.mode = DictationMode::Starting;
-        state_.error.clear();
+        clear_active_rewrite_locked();
         state_.status = use_gpu
             ? "Restarting AI cleanup on GPU..."
             : "Restarting AI cleanup on CPU...";
     }
-
     std::string ignored;
     if (rewrite_.running()) {
         rewrite_.send({{"v", 1}, {"type", "shutdown"}, {"id", "ui-restart-rewrite"}}, ignored);
     }
     rewrite_.stop();
-
     std::string error;
     if (!start_rewrite_worker(config, error)) {
         std::lock_guard lock(mutex_);
         rewrite_unavailable_ = true;
-        state_.rewrite_ready = false;
         state_.error = std::move(error);
-        update_ready_state_locked();
-        return false;
+        state_.status = "AI cleanup unavailable - raw dictation remains ready";
     }
     return true;
 }
 
 void AppController::tick() {
     std::lock_guard lock(mutex_);
-    if (state_.mode != DictationMode::Recording ||
-        !state_.rewrite_ready || rewrite_in_flight_ || !pending_live_cleanup_) {
-        return;
+    const auto now = std::chrono::steady_clock::now();
+    if (active_rewrite_ && now - active_rewrite_->started >= kRewriteTimeout) {
+        clear_active_rewrite_locked();
+        state_.error = "AI cleanup timed out; raw transcription continues.";
+        if (state_.mode == DictationMode::Recording) {
+            state_.status = "Listening - AI cleanup timed out; raw transcription continues";
+        }
+        if (transcript_.has_stable_backlog()) {
+            rewrite_pending_ = true;
+            rewrite_due_ = now;
+        }
     }
-    if (std::chrono::steady_clock::now() >= live_cleanup_due_) {
+    if (state_.mode == DictationMode::Recording && state_.cleanup_mode == CleanupMode::Ai &&
+        state_.rewrite_ready && !active_rewrite_ && rewrite_pending_ && now >= rewrite_due_) {
         dispatch_rewrite_locked();
     }
 }
@@ -357,19 +343,18 @@ void AppController::handle_asr_message(const nlohmann::json& message) {
     std::lock_guard lock(mutex_);
     const std::string type = message.value("type", "");
     if (type == "loading_model") {
-        state_.status = "Loading speech and rewrite models...";
+        state_.status = "Loading speech recognition model...";
     } else if (type == "ready") {
         state_.asr_ready = true;
         update_ready_state_locked();
     } else if (type == "recording_started") {
         if (message.value("sessionId", "") != session_id_) return;
         state_.mode = DictationMode::Recording;
-        state_.status = rewrite_unavailable_
-            ? "Listening - raw transcription (AI cleanup unavailable)"
-            : "Listening - live cleanup starts after a short pause";
-        if (language_restart_pending_) {
-            stop_for_language_change_locked();
-        }
+        state_.status = state_.cleanup_mode == CleanupMode::Ai
+            ? (state_.rewrite_ready ? "Listening - bounded AI cleanup is ready"
+                                    : "Listening - raw text while AI cleanup prepares")
+            : "Listening - raw transcription";
+        if (language_restart_pending_) stop_for_language_change_locked();
     } else if (type == "audio_level") {
         if (state_.mode == DictationMode::Recording &&
             message.value("sessionId", "") == session_id_) {
@@ -378,31 +363,33 @@ void AppController::handle_asr_message(const nlohmann::json& message) {
         }
     } else if (type == "transcript_update") {
         if (message.value("sessionId", "") != session_id_) return;
-        current_session_text_ = message.value("text", "");
-        update_transcript_locked(AppendTranscript(session_prefix_, current_session_text_));
+        const bool had_stable = transcript_.has_stable_backlog();
+        transcript_.update_asr_hypothesis(message.value("text", ""));
+        refresh_transcript_locked();
+        if (!had_stable && transcript_.has_stable_backlog()) queue_rewrite_locked();
     } else if (type == "recording_finalized") {
         if (message.value("sessionId", "") != session_id_) return;
         state_.audio_rms = 0.0F;
         state_.audio_peak = 0.0F;
-        current_session_text_ = message.value("text", current_session_text_);
-        state_.raw_final_text = AppendTranscript(session_prefix_, current_session_text_);
-        update_transcript_locked(state_.raw_final_text);
-        pending_live_cleanup_ = false;
+        transcript_.finalize_asr_hypothesis(message.value("text", ""));
+        state_.raw_final_text = transcript_.raw_text();
+        refresh_transcript_locked();
         if (language_restart_pending_) {
             language_restart_pending_ = false;
-            session_prefix_ = state_.raw_final_text;
-            current_session_text_.clear();
             start_recording_locked(false);
             return;
         }
         if (state_.raw_final_text.empty()) {
+            clear_active_rewrite_locked();
             state_.mode = DictationMode::Complete;
-            active_rewrite_session_id_.clear();
             state_.status = "No speech recognized - press Enter to try again";
         } else {
             finish_dictation_locked();
         }
     } else if (type == "recording_cancelled") {
+        ++dictation_generation_;
+        transcript_.reset(dictation_generation_);
+        clear_active_rewrite_locked();
         state_.mode = DictationMode::Ready;
         state_.audio_rms = 0.0F;
         state_.audio_peak = 0.0F;
@@ -410,170 +397,146 @@ void AppController::handle_asr_message(const nlohmann::json& message) {
         state_.live_text.clear();
         state_.raw_final_text.clear();
         state_.rewritten_text.clear();
-        state_.rewrite_in_progress = false;
         language_restart_pending_ = false;
-        pending_live_cleanup_ = false;
-        active_rewrite_session_id_.clear();
-        active_rewrite_source_.clear();
-        last_completed_rewrite_source_.clear();
+        rewrite_pending_ = false;
         session_id_.clear();
-        session_prefix_.clear();
-        current_session_text_.clear();
+        dictation_id_.clear();
     } else if (type == "warning") {
         state_.status = message.value("message", "Audio processing warning");
     } else if (type == "error") {
-        const std::string message_text = message.value("message", "Speech worker error");
-        const bool recoverable = message.value("recoverable", false);
-        const std::string code = message.value("code", "");
-        if (recoverable && code == "MICROPHONE_UNAVAILABLE") {
+        const std::string text = message.value("message", "Speech worker error");
+        if (message.value("recoverable", false) &&
+            message.value("code", "") == "MICROPHONE_UNAVAILABLE") {
             state_.mode = DictationMode::Ready;
             state_.audio_rms = 0.0F;
             state_.audio_peak = 0.0F;
             state_.status = "Microphone unavailable - check the default input and try again";
-            state_.error = message_text;
+            state_.error = text;
             session_id_.clear();
         } else {
-            set_error_locked(message_text);
+            set_error_locked(text);
         }
     }
 }
 
 void AppController::handle_rewrite_message(const nlohmann::json& message) {
     std::lock_guard lock(mutex_);
+    if (state_.cleanup_mode != CleanupMode::Ai) return;
     const std::string type = message.value("type", "");
     if (type == "ready") {
         rewrite_unavailable_ = false;
         state_.rewrite_ready = true;
-        update_ready_state_locked();
-    } else if (type == "rewrite_completed") {
-        if (!rewrite_in_flight_ || message.value("requestId", "") != active_rewrite_id_) {
-            return;
-        }
-        const bool same_session = active_rewrite_session_id_ == session_id_;
-        const std::string completed_source = active_rewrite_source_;
-        rewrite_in_flight_ = false;
-        state_.rewrite_in_progress = false;
-        active_rewrite_id_.clear();
-        active_rewrite_session_id_.clear();
-        active_rewrite_source_.clear();
-        if (!same_session) {
-            if (state_.mode == DictationMode::Recording && pending_live_cleanup_) {
-                live_cleanup_due_ = std::chrono::steady_clock::now();
-            }
-            return;
-        }
-
-        state_.rewritten_text = message.value("text", "");
-        last_completed_rewrite_source_ = completed_source;
         state_.error.clear();
         if (state_.mode == DictationMode::Recording) {
-            state_.status = pending_live_cleanup_
-                ? "Listening - newer speech is waiting for cleanup"
-                : "Listening - live cleanup is up to date";
+            state_.status = "Listening - bounded AI cleanup is ready";
+            if (transcript_.has_stable_backlog()) queue_rewrite_locked();
+        } else if (state_.mode == DictationMode::Ready) {
+            state_.status = "Ready - AI cleanup loaded";
+        }
+    } else if (type == "rewrite_tail_completed") {
+        if (!active_rewrite_ || message.value("requestId", "") != active_rewrite_->id) return;
+        const ActiveRewrite completed = *active_rewrite_;
+        clear_active_rewrite_locked();
+        const bool identity_matches =
+            message.value("sessionId", "") == dictation_id_ &&
+            message.value("tailRevision", std::uint64_t(-1)) == completed.transcript.tail_revision &&
+            message.value("firstStableSpanId", std::uint64_t(0)) ==
+                completed.transcript.first_stable_span_id &&
+            message.value("lastStableSpanId", std::uint64_t(0)) ==
+                completed.transcript.last_stable_span_id;
+        if (identity_matches && transcript_.commit(
+                completed.transcript, message.value("replacementTail", ""))) {
+            state_.error.clear();
+            refresh_transcript_locked();
+        }
+        if (state_.mode == DictationMode::Recording && transcript_.has_stable_backlog()) {
+            rewrite_pending_ = true;
+            rewrite_due_ = std::chrono::steady_clock::now();
+            state_.status = "Listening - newer speech is waiting for cleanup";
+        } else if (state_.mode == DictationMode::Recording) {
+            state_.status = "Listening - bounded AI cleanup is up to date";
         }
     } else if (type == "error") {
-        const std::string message_text = message.value("message", "Rewrite worker error");
-        const bool recoverable = message.value("recoverable", false);
-        const std::string code = message.value("code", "");
-        const bool same_session = active_rewrite_session_id_ == session_id_;
-        const bool request_failed = rewrite_in_flight_;
-        if (request_failed) {
-            rewrite_in_flight_ = false;
-            state_.rewrite_in_progress = false;
-            active_rewrite_id_.clear();
-            active_rewrite_session_id_.clear();
-            active_rewrite_source_.clear();
-        }
-        if (!recoverable || code == "WORKER_EXITED" || code == "MODEL_LOAD_FAILED") {
+        const bool fatal = !message.value("recoverable", false) ||
+            message.value("code", "") == "WORKER_EXITED" ||
+            message.value("code", "") == "MODEL_LOAD_FAILED";
+        clear_active_rewrite_locked();
+        if (fatal) {
             rewrite_unavailable_ = true;
             state_.rewrite_ready = false;
         }
-        state_.error = message_text;
-        if ((same_session || rewrite_unavailable_) &&
-            state_.mode == DictationMode::Recording) {
-            pending_live_cleanup_ = false;
-            state_.rewritten_text = state_.live_text;
-            last_completed_rewrite_source_.clear();
-            state_.status = "Listening - live cleanup failed; raw transcription continues";
-        } else if (state_.mode == DictationMode::Starting) {
-            update_ready_state_locked();
+        state_.error = message.value("message", "Rewrite worker error");
+        if (state_.mode == DictationMode::Recording) {
+            state_.status = "Listening - AI cleanup failed; raw transcription continues";
         } else if (state_.mode == DictationMode::Ready || state_.mode == DictationMode::Complete) {
-            state_.status = "AI cleanup unavailable - raw transcription remains available";
+            state_.status = "AI cleanup unavailable - raw dictation remains ready";
         }
     }
 }
 
 void AppController::update_ready_state_locked() {
-    if (state_.asr_ready && (state_.rewrite_ready || rewrite_unavailable_) &&
-        state_.mode == DictationMode::Starting) {
+    if (state_.asr_ready && state_.mode == DictationMode::Starting) {
         state_.mode = DictationMode::Ready;
-        state_.status = rewrite_unavailable_
-            ? "Ready - AI cleanup unavailable; raw transcription will be used"
-            : "Ready - press Enter or click Start dictation";
-    } else if (!state_.asr_ready || (!state_.rewrite_ready && !rewrite_unavailable_)) {
-        state_.status = "Loading speech and rewrite models...";
+        state_.status = state_.cleanup_mode == CleanupMode::Ai
+            ? (state_.rewrite_ready ? "Ready - AI cleanup loaded"
+                                    : "Ready - AI cleanup is loading; raw dictation is available")
+            : "Ready - raw dictation; AI cleanup is off";
+    } else if (!state_.asr_ready) {
+        state_.status = "Loading speech recognition model...";
     }
 }
 
-void AppController::update_transcript_locked(std::string text) {
-    if (text == state_.live_text) {
-        return;
-    }
-    state_.live_text = std::move(text);
+void AppController::refresh_transcript_locked() {
+    state_.live_text = state_.cleanup_mode == CleanupMode::Ai
+        ? transcript_.composed_text() : transcript_.raw_text();
+    state_.rewritten_text = state_.live_text;
+}
+
+void AppController::queue_rewrite_locked() {
+    if (state_.cleanup_mode != CleanupMode::Ai || !transcript_.has_stable_backlog()) return;
     const auto now = std::chrono::steady_clock::now();
-    if (!pending_live_cleanup_) {
-        live_cleanup_pending_since_ = now;
-    }
-    pending_live_cleanup_ = state_.rewrite_ready && !state_.live_text.empty();
-    live_cleanup_due_ = std::min(
-        now + kLiveCleanupDebounce,
-        live_cleanup_pending_since_ + kLiveCleanupMaximumDelay);
-    if (state_.mode == DictationMode::Recording) {
-        if (rewrite_unavailable_) {
-            state_.status = "Listening - raw transcription (AI cleanup unavailable)";
-        } else {
-            state_.status = rewrite_in_flight_
-                ? "Listening - live cleanup is processing an earlier snapshot"
-                : "Listening - live cleanup queued";
-        }
+    if (!rewrite_pending_) rewrite_pending_since_ = now;
+    rewrite_pending_ = true;
+    rewrite_due_ = std::min(
+        now + kLiveCleanupDebounce, rewrite_pending_since_ + kLiveCleanupMaximumDelay);
+    if (state_.mode == DictationMode::Recording && state_.rewrite_ready) {
+        state_.status = active_rewrite_
+            ? "Listening - newer stable speech is coalesced"
+            : "Listening - bounded AI cleanup queued";
     }
 }
 
 bool AppController::dispatch_rewrite_locked() {
-    if (rewrite_in_flight_ || !state_.rewrite_ready) {
+    if (active_rewrite_ || !state_.rewrite_ready ||
+        state_.cleanup_mode != CleanupMode::Ai) return false;
+    const auto snapshot = transcript_.make_rewrite_snapshot();
+    if (!snapshot) {
+        rewrite_pending_ = false;
         return false;
     }
-    const std::string& text = state_.live_text;
-    if (text.empty()) {
-        return false;
-    }
-
-    active_rewrite_id_ = next_id_locked("live-rewrite");
-    active_rewrite_session_id_ = session_id_;
-    active_rewrite_source_ = text;
-    rewrite_in_flight_ = true;
+    ActiveRewrite active;
+    active.id = next_id_locked("rewrite-tail");
+    active.transcript = *snapshot;
+    active.started = std::chrono::steady_clock::now();
+    active_rewrite_ = active;
     state_.rewrite_in_progress = true;
-    pending_live_cleanup_ = false;
-    state_.status = "Listening - cleaning the current transcript...";
+    rewrite_pending_ = false;
+    state_.status = "Listening - cleaning a bounded transcript tail...";
 
     std::string error;
     if (!rewrite_.send({
-            {"v", 1},
-            {"type", "rewrite"},
-            {"id", active_rewrite_id_},
-            {"requestId", active_rewrite_id_},
-            {"language", state_.language},
-            {"text", text},
-        }, error)) {
-        rewrite_in_flight_ = false;
-        state_.rewrite_in_progress = false;
-        state_.status = "Listening - live cleanup unavailable";
+            {"v", 2}, {"type", "rewrite_tail"}, {"id", active.id},
+            {"requestId", active.id}, {"sessionId", dictation_id_},
+            {"tailRevision", snapshot->tail_revision},
+            {"firstStableSpanId", snapshot->first_stable_span_id},
+            {"lastStableSpanId", snapshot->last_stable_span_id},
+            {"languageHint", state_.language},
+            {"readOnlyContext", snapshot->read_only_context},
+            {"editableTail", snapshot->editable_tail},
+            {"newAsrText", snapshot->new_asr_text}}, error)) {
+        clear_active_rewrite_locked();
         state_.error = std::move(error);
-        state_.rewritten_text = state_.live_text;
-        last_completed_rewrite_source_.clear();
-        active_rewrite_id_.clear();
-        active_rewrite_session_id_.clear();
-        active_rewrite_source_.clear();
+        state_.status = "Listening - AI cleanup unavailable; raw transcription continues";
         if (!rewrite_.running()) {
             rewrite_unavailable_ = true;
             state_.rewrite_ready = false;
@@ -583,17 +546,20 @@ bool AppController::dispatch_rewrite_locked() {
     return true;
 }
 
-void AppController::finish_dictation_locked() {
-    pending_live_cleanup_ = false;
+void AppController::clear_active_rewrite_locked() {
+    active_rewrite_.reset();
     state_.rewrite_in_progress = false;
-    active_rewrite_session_id_.clear();
-    if (state_.rewritten_text.empty() ||
-        last_completed_rewrite_source_ != state_.raw_final_text) {
-        state_.rewritten_text = state_.raw_final_text;
-        state_.status = "Dictation complete using the final raw transcript";
-    } else {
-        state_.status = "Dictation complete using cleanup of the final ASR snapshot";
-    }
+}
+
+void AppController::finish_dictation_locked() {
+    rewrite_pending_ = false;
+    clear_active_rewrite_locked();
+    state_.rewritten_text = state_.cleanup_mode == CleanupMode::Ai
+        ? transcript_.composed_text() : state_.raw_final_text;
+    state_.live_text = state_.rewritten_text;
+    state_.status = state_.cleanup_mode == CleanupMode::Ai
+        ? "Dictation complete using accepted cleanup plus final raw speech"
+        : "Dictation complete using the final raw transcript";
     state_.mode = DictationMode::Complete;
 }
 
@@ -621,20 +587,19 @@ bool CanCancel(const AppSnapshot& snapshot) {
 }
 
 bool CanSetLanguage(const AppSnapshot& snapshot) {
-    return snapshot.mode == DictationMode::Starting ||
-        snapshot.mode == DictationMode::Ready ||
+    return snapshot.mode == DictationMode::Starting || snapshot.mode == DictationMode::Ready ||
         snapshot.mode == DictationMode::StartingRecording ||
-        snapshot.mode == DictationMode::Recording ||
-        snapshot.mode == DictationMode::Finalizing ||
-        snapshot.mode == DictationMode::Complete ||
-        snapshot.mode == DictationMode::Error;
+        snapshot.mode == DictationMode::Recording || snapshot.mode == DictationMode::Finalizing ||
+        snapshot.mode == DictationMode::Complete || snapshot.mode == DictationMode::Error;
+}
+
+bool CanSetCleanupMode(const AppSnapshot& snapshot) {
+    return snapshot.mode == DictationMode::Starting || snapshot.mode == DictationMode::Ready ||
+        snapshot.mode == DictationMode::Complete || snapshot.mode == DictationMode::Error;
 }
 
 bool CanSetComputeDevice(const AppSnapshot& snapshot) {
-    return snapshot.mode == DictationMode::Starting ||
-        snapshot.mode == DictationMode::Ready ||
-        snapshot.mode == DictationMode::Complete ||
-        snapshot.mode == DictationMode::Error;
+    return CanSetCleanupMode(snapshot);
 }
 
 const char* LanguageLabel(const AppSnapshot& snapshot) {
@@ -645,22 +610,14 @@ const char* LanguageLabel(const AppSnapshot& snapshot) {
 
 const char* PrimaryButtonLabel(const AppSnapshot& snapshot) {
     switch (snapshot.mode) {
-    case DictationMode::Recording:
-        return "Stop dictation";
-    case DictationMode::StartingRecording:
-        return "Opening microphone...";
-    case DictationMode::Finalizing:
-        return "Finalizing transcript...";
-    case DictationMode::Complete:
-        return "Start another dictation";
-    case DictationMode::Ready:
-        return "Start dictation";
-    case DictationMode::Error:
-        return "Unavailable";
-    case DictationMode::Starting:
-        return "Loading models...";
-    case DictationMode::Cancelling:
-        return "Cancelling...";
+    case DictationMode::Recording: return "Stop dictation";
+    case DictationMode::StartingRecording: return "Opening microphone...";
+    case DictationMode::Finalizing: return "Finalizing transcript...";
+    case DictationMode::Complete: return "Start another dictation";
+    case DictationMode::Ready: return "Start dictation";
+    case DictationMode::Error: return "Unavailable";
+    case DictationMode::Starting: return "Loading speech model...";
+    case DictationMode::Cancelling: return "Cancelling...";
     }
     return "Start dictation";
 }

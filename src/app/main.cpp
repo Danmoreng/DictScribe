@@ -40,11 +40,18 @@ int main(int argc, char** argv) {
     if (discovery.smoke_test) {
         for (int attempt = 0; attempt < 600; ++attempt) {
             const auto state = controller.snapshot();
-            if (state.asr_ready && state.rewrite_ready) {
+            if (state.asr_ready &&
+                (state.cleanup_mode == dictscribe::app::CleanupMode::Off || state.rewrite_ready)) {
                 std::cout << "DictScribe UI controller smoke test passed.\n";
                 return 0;
             }
             if (state.mode == dictscribe::app::DictationMode::Error) {
+                std::cerr << state.error << '\n';
+                return 1;
+            }
+            if (state.mode == dictscribe::app::DictationMode::Ready &&
+                state.cleanup_mode == dictscribe::app::CleanupMode::Ai &&
+                !state.rewrite_ready && !state.error.empty()) {
                 std::cerr << state.error << '\n';
                 return 1;
             }

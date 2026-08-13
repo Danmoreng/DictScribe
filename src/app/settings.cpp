@@ -39,6 +39,10 @@ bool IsSupportedLanguage(const std::string& language) {
     return language == "auto" || language == "de" || language == "en";
 }
 
+CleanupMode ParseCleanupMode(const std::string& value) {
+    return value == "ai" ? CleanupMode::Ai : CleanupMode::Off;
+}
+
 const char* ComputeDeviceName(ComputeDevice device) {
     return device == ComputeDevice::Gpu ? "gpu" : "cpu";
 }
@@ -77,6 +81,10 @@ AppSettings LoadSettings(const std::filesystem::path& path) {
     if (language != document.end() && language->is_string()) {
         const std::string value = language->get<std::string>();
         if (IsSupportedLanguage(value)) settings.language = value;
+    }
+    const auto cleanup_mode = document.find("cleanupMode");
+    if (cleanup_mode != document.end() && cleanup_mode->is_string()) {
+        settings.cleanup_mode = ParseCleanupMode(cleanup_mode->get<std::string>());
     }
     settings.asr_device = ParseDevice(document, "asrDevice");
     settings.rewrite_device = ParseDevice(document, "rewriteDevice");
@@ -119,8 +127,9 @@ bool SaveSettings(
     }
 
     nlohmann::json document = {
-        {"version", 2},
+        {"version", 3},
         {"language", IsSupportedLanguage(settings.language) ? settings.language : "auto"},
+        {"cleanupMode", CleanupModeName(settings.cleanup_mode)},
         {"asrDevice", ComputeDeviceName(settings.asr_device)},
         {"rewriteDevice", ComputeDeviceName(settings.rewrite_device)},
     };
@@ -198,7 +207,8 @@ bool ReconcilePendingDeviceSettings(
             changed = true;
         }
     }
-    if (pending.rewrite_device && snapshot.rewrite_ready) {
+    if (pending.rewrite_device &&
+        (snapshot.rewrite_ready || snapshot.cleanup_mode == CleanupMode::Off)) {
         const ComputeDevice active = snapshot.rewrite_use_gpu
             ? ComputeDevice::Gpu : ComputeDevice::Cpu;
         if (active == *pending.rewrite_device) {

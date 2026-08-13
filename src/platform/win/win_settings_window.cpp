@@ -20,7 +20,7 @@ namespace {
 
 constexpr wchar_t kSettingsClass[] = L"DictScribeSettingsWindow";
 constexpr int kLogicalWidth = 640;
-constexpr int kLogicalHeight = 600;
+constexpr int kLogicalHeight = 660;
 
 sk_sp<SkTypeface> FindTypeface(
     const sk_sp<SkFontMgr>& manager,

@@ -117,11 +117,21 @@ SettingsViewLayout RenderSettingsView(
     SegmentedButton(
         canvas, layout.language_english, "English", model.settings.language == "en", true, control_font);
 
-    Text(canvas, "COMPUTE DEVICE", 32.0F, 215.0F, section_font, kMuted);
-    Text(canvas, "Speech recognition", 32.0F, 247.0F, section_font, kText);
-    Text(canvas, "Nemotron ASR worker", 32.0F, 267.0F, detail_font, kMuted);
-    layout.asr_cpu = SkRect::MakeXYWH(width - 216.0F, 228.0F, 84.0F, 38.0F);
-    layout.asr_gpu = SkRect::MakeXYWH(width - 124.0F, 228.0F, 92.0F, 38.0F);
+    Text(canvas, "TRANSCRIPT CLEANUP", 32.0F, 202.0F, section_font, kMuted);
+    layout.cleanup_off = SkRect::MakeXYWH(32.0F, 216.0F, 128.0F, 38.0F);
+    layout.cleanup_ai = SkRect::MakeXYWH(168.0F, 216.0F, 168.0F, 38.0F);
+    SegmentedButton(
+        canvas, layout.cleanup_off, "Off", model.settings.cleanup_mode == app::CleanupMode::Off,
+        model.device_controls_enabled, control_font);
+    SegmentedButton(
+        canvas, layout.cleanup_ai, "AI cleanup", model.settings.cleanup_mode == app::CleanupMode::Ai,
+        model.device_controls_enabled, control_font);
+
+    Text(canvas, "COMPUTE DEVICE", 32.0F, 296.0F, section_font, kMuted);
+    Text(canvas, "Speech recognition", 32.0F, 328.0F, section_font, kText);
+    Text(canvas, "Nemotron ASR worker", 32.0F, 348.0F, detail_font, kMuted);
+    layout.asr_cpu = SkRect::MakeXYWH(width - 216.0F, 309.0F, 84.0F, 38.0F);
+    layout.asr_gpu = SkRect::MakeXYWH(width - 124.0F, 309.0F, 92.0F, 38.0F);
     SegmentedButton(
         canvas, layout.asr_cpu, "CPU", model.settings.asr_device == app::ComputeDevice::Cpu,
         model.device_controls_enabled, control_font);
@@ -129,10 +139,10 @@ SettingsViewLayout RenderSettingsView(
         canvas, layout.asr_gpu, "GPU", model.settings.asr_device == app::ComputeDevice::Gpu,
         model.device_controls_enabled, control_font);
 
-    Text(canvas, "AI cleanup", 32.0F, 309.0F, section_font, kText);
-    Text(canvas, "llama.cpp rewrite worker", 32.0F, 329.0F, detail_font, kMuted);
-    layout.rewrite_cpu = SkRect::MakeXYWH(width - 216.0F, 290.0F, 84.0F, 38.0F);
-    layout.rewrite_gpu = SkRect::MakeXYWH(width - 124.0F, 290.0F, 92.0F, 38.0F);
+    Text(canvas, "AI cleanup", 32.0F, 390.0F, section_font, kText);
+    Text(canvas, "llama.cpp rewrite worker", 32.0F, 410.0F, detail_font, kMuted);
+    layout.rewrite_cpu = SkRect::MakeXYWH(width - 216.0F, 371.0F, 84.0F, 38.0F);
+    layout.rewrite_gpu = SkRect::MakeXYWH(width - 124.0F, 371.0F, 92.0F, 38.0F);
     SegmentedButton(
         canvas, layout.rewrite_cpu, "CPU", model.settings.rewrite_device == app::ComputeDevice::Cpu,
         model.device_controls_enabled, control_font);
@@ -144,20 +154,20 @@ SettingsViewLayout RenderSettingsView(
         ? "Changing a device immediately restarts only that local worker."
         : "Finish or cancel the current dictation before changing a device.";
     Text(
-        canvas, device_note, 32.0F, 365.0F, body_font,
+        canvas, device_note, 32.0F, 446.0F, body_font,
         model.device_controls_enabled ? kMuted : kWarning);
 
-    Text(canvas, "LOCAL MODELS", 32.0F, 418.0F, section_font, kMuted);
+    Text(canvas, "LOCAL MODELS", 32.0F, 499.0F, section_font, kMuted);
     canvas.drawRoundRect(
-        SkRect::MakeXYWH(32.0F, 433.0F, width - 64.0F, 104.0F), 10.0F, 10.0F, Fill(kSurface));
-    Outline(canvas, SkRect::MakeXYWH(32.0F, 433.0F, width - 64.0F, 104.0F), 10.0F);
-    Text(canvas, "Speech recognition", 48.0F, 462.0F, detail_font, kMuted);
-    Text(canvas, ShortModelName(model.asr_model_name), 48.0F, 481.0F, body_font, kText);
-    Text(canvas, "AI cleanup", 48.0F, 510.0F, detail_font, kMuted);
-    Text(canvas, ShortModelName(model.rewrite_model_name), 48.0F, 529.0F, body_font, kText);
+        SkRect::MakeXYWH(32.0F, 514.0F, width - 64.0F, 104.0F), 10.0F, 10.0F, Fill(kSurface));
+    Outline(canvas, SkRect::MakeXYWH(32.0F, 514.0F, width - 64.0F, 104.0F), 10.0F);
+    Text(canvas, "Speech recognition", 48.0F, 543.0F, detail_font, kMuted);
+    Text(canvas, ShortModelName(model.asr_model_name), 48.0F, 562.0F, body_font, kText);
+    Text(canvas, "AI cleanup", 48.0F, 591.0F, detail_font, kMuted);
+    Text(canvas, ShortModelName(model.rewrite_model_name), 48.0F, 610.0F, body_font, kText);
 
     if (!model.notice.empty()) {
-        Text(canvas, model.notice, 32.0F, std::min(height - 22.0F, 572.0F), detail_font, kWarning);
+        Text(canvas, model.notice, 32.0F, std::min(height - 14.0F, 646.0F), detail_font, kWarning);
     }
     return layout;
 }
@@ -171,6 +181,8 @@ SettingsAction HitTestSettingsView(
     if (layout.language_auto.contains(x, y)) return SettingsAction::LanguageAuto;
     if (layout.language_german.contains(x, y)) return SettingsAction::LanguageGerman;
     if (layout.language_english.contains(x, y)) return SettingsAction::LanguageEnglish;
+    if (layout.cleanup_off.contains(x, y)) return SettingsAction::CleanupOff;
+    if (layout.cleanup_ai.contains(x, y)) return SettingsAction::CleanupAi;
     if (!device_controls_enabled) return SettingsAction::NoAction;
     if (layout.asr_cpu.contains(x, y)) return SettingsAction::AsrCpu;
     if (layout.asr_gpu.contains(x, y)) return SettingsAction::AsrGpu;

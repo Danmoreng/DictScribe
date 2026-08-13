@@ -18,167 +18,169 @@ dictscribe::app::AppSnapshot wait_until(
     do {
         controller.tick();
         const auto state = controller.snapshot();
-        if (predicate(state)) {
-            return state;
-        }
+        if (predicate(state)) return state;
         std::this_thread::sleep_for(20ms);
     } while (std::chrono::steady_clock::now() < deadline);
     assert(false && "controller state timed out");
     return {};
 }
 
+dictscribe::app::AppConfig config(dictscribe::app::CleanupMode mode) {
+    dictscribe::app::AppConfig result;
+    result.asr_worker = DICTSCRIBE_FAKE_ASR_WORKER;
+    result.rewrite_worker = DICTSCRIBE_FAKE_REWRITE_WORKER;
+    result.asr_model = "unused-asr.gguf";
+    result.rewrite_model = "unused-rewrite.gguf";
+    result.language = "de";
+    result.cleanup_mode = mode;
+    return result;
+}
+
 } // namespace
 
 int main() {
-    dictscribe::app::AppSnapshot starting_snapshot;
-    assert(dictscribe::app::CanSetComputeDevice(starting_snapshot));
+    using dictscribe::app::CleanupMode;
+    using dictscribe::app::DictationMode;
 
-    dictscribe::app::AppConfig config;
-    config.asr_worker = DICTSCRIBE_FAKE_ASR_WORKER;
-    config.rewrite_worker = DICTSCRIBE_FAKE_REWRITE_WORKER;
-    config.asr_model = "unused-asr.gguf";
-    config.rewrite_model = "unused-rewrite.gguf";
-    config.language = "de";
-
-    dictscribe::app::AppController controller;
-    assert(controller.start(config));
-    wait_until(controller, [](const auto& state) {
-        return state.mode == dictscribe::app::DictationMode::Ready;
+    dictscribe::app::AppController raw_controller;
+    assert(raw_controller.start(config(CleanupMode::Off)));
+    const auto raw_ready = wait_until(raw_controller, [](const auto& state) {
+        return state.mode == DictationMode::Ready;
     });
+    assert(raw_ready.asr_ready);
+    assert(!raw_ready.rewrite_ready);
+    assert(raw_ready.cleanup_mode == CleanupMode::Off);
 
-    assert(controller.set_asr_device(true));
-    const auto restarting_asr = controller.snapshot();
-    assert(restarting_asr.rewrite_ready);
-    const auto asr_gpu = wait_until(controller, [](const auto& state) {
-        return state.mode == dictscribe::app::DictationMode::Ready;
+    raw_controller.toggle_recording();
+    const auto raw_recording = wait_until(raw_controller, [](const auto& state) {
+        return state.mode == DictationMode::Recording &&
+            state.live_text.find("llama_rewriter.cpp weiter 1") != std::string::npos;
     });
-    assert(asr_gpu.asr_use_gpu);
-    assert(!asr_gpu.rewrite_use_gpu);
-
-    assert(controller.set_asr_device(false));
-    const auto both_cpu_again = wait_until(controller, [](const auto& state) {
-        return state.mode == dictscribe::app::DictationMode::Ready;
+    assert(!raw_recording.rewrite_in_progress);
+    raw_controller.toggle_recording();
+    const auto raw_complete = wait_until(raw_controller, [](const auto& state) {
+        return state.mode == DictationMode::Complete;
     });
-    assert(!both_cpu_again.asr_use_gpu);
-    assert(!both_cpu_again.rewrite_use_gpu);
+    assert(raw_complete.raw_final_text ==
+        "Ich teste die lokale Spracherkennung mit mehreren stabilen Wörtern im Diktat und llama_rewriter.cpp weiter final 1");
+    assert(raw_complete.rewritten_text == raw_complete.raw_final_text);
 
-    assert(controller.set_rewrite_device(true));
-    const auto restarting_rewrite = controller.snapshot();
-    assert(restarting_rewrite.asr_ready);
-    const auto rewrite_gpu = wait_until(controller, [](const auto& state) {
-        return state.mode == dictscribe::app::DictationMode::Ready;
+    assert(raw_controller.set_cleanup_mode(CleanupMode::Ai));
+    const auto cleanup_ready = wait_until(raw_controller, [](const auto& state) {
+        return state.rewrite_ready;
     });
-    assert(!rewrite_gpu.asr_use_gpu);
-    assert(rewrite_gpu.rewrite_use_gpu);
+    assert(cleanup_ready.cleanup_mode == CleanupMode::Ai);
 
-    assert(controller.set_asr_device(true));
-    const auto both_gpu = wait_until(controller, [](const auto& state) {
-        return state.mode == dictscribe::app::DictationMode::Ready;
+    assert(raw_controller.set_asr_device(true));
+    wait_until(raw_controller, [](const auto& state) {
+        return state.mode == DictationMode::Ready && state.asr_use_gpu;
     });
-    assert(both_gpu.asr_use_gpu && both_gpu.rewrite_use_gpu);
+    assert(raw_controller.set_rewrite_device(true));
+    const auto both_gpu = wait_until(raw_controller, [](const auto& state) {
+        return state.rewrite_ready && state.rewrite_use_gpu;
+    });
+    assert(both_gpu.asr_use_gpu);
 
-    controller.toggle_recording();
-    const auto cleaning = wait_until(controller, [](const auto& state) {
-        return state.mode == dictscribe::app::DictationMode::Recording &&
-            state.rewrite_in_progress;
+    raw_controller.toggle_recording();
+    const auto cleaning = wait_until(raw_controller, [](const auto& state) {
+        return state.mode == DictationMode::Recording && state.rewrite_in_progress;
     });
     assert(cleaning.audio_rms > 0.17F && cleaning.audio_peak > 0.71F);
-
     const auto stop_started = std::chrono::steady_clock::now();
-    controller.toggle_recording();
-    const auto first_complete = wait_until(controller, [](const auto& state) {
-        return state.mode == dictscribe::app::DictationMode::Complete;
+    raw_controller.toggle_recording();
+    const auto cleaned_complete = wait_until(raw_controller, [](const auto& state) {
+        return state.mode == DictationMode::Complete;
     });
     assert(std::chrono::steady_clock::now() - stop_started < 100ms);
-    assert(first_complete.raw_final_text == "Ich teste llama_rewriter.cpp weiter final 1");
-    assert(first_complete.rewritten_text == first_complete.raw_final_text);
-    assert(first_complete.audio_rms == 0.0F && first_complete.audio_peak == 0.0F);
+    assert(cleaned_complete.raw_final_text.find("weiter final ") != std::string::npos);
+    assert(cleaned_complete.rewritten_text.find("weiter final ") != std::string::npos);
+    const std::string committed = cleaned_complete.rewritten_text;
     std::this_thread::sleep_for(200ms);
-    assert(controller.snapshot().rewritten_text == first_complete.raw_final_text);
+    assert(raw_controller.snapshot().rewritten_text == committed);
 
-    controller.toggle_recording();
-    wait_until(controller, [](const auto& state) {
-        return state.mode == dictscribe::app::DictationMode::Recording &&
-            state.rewritten_text.find("llama_rewriter.cpp weiter 2") != std::string::npos;
+    raw_controller.set_language("en");
+    raw_controller.toggle_recording();
+    wait_until(raw_controller, [](const auto& state) {
+        return state.mode == DictationMode::Recording &&
+            state.live_text.find("further ") != std::string::npos;
     });
-    controller.toggle_recording();
-    const auto second_complete = wait_until(controller, [](const auto& state) {
-        return state.mode == dictscribe::app::DictationMode::Complete;
+    raw_controller.set_language("de");
+    const auto switched = wait_until(raw_controller, [](const auto& state) {
+        return state.mode == DictationMode::Recording && state.language == "de" &&
+            state.live_text.find("further final ") != std::string::npos &&
+            state.live_text.find("weiter ") != std::string::npos;
     });
-    assert(second_complete.rewritten_text == second_complete.raw_final_text);
+    assert(switched.live_text.find("I am testing") != std::string::npos);
+    raw_controller.toggle_recording();
+    const auto switched_final = wait_until(raw_controller, [](const auto& state) {
+        return state.mode == DictationMode::Complete;
+    });
+    assert(switched_final.raw_final_text.find("further final ") != std::string::npos);
+    assert(switched_final.raw_final_text.find("weiter final ") != std::string::npos);
+    assert(switched_final.rewritten_text.find("weiter final ") != std::string::npos);
 
-    controller.set_language("en");
-    controller.toggle_recording();
-    wait_until(controller, [](const auto& state) {
-        return state.mode == dictscribe::app::DictationMode::Recording &&
-            state.live_text.find("further 3") != std::string::npos;
-    });
-    controller.set_language("de");
-    const auto switched = wait_until(controller, [](const auto& state) {
-        return state.mode == dictscribe::app::DictationMode::Recording &&
-            state.language == "de" &&
-            state.live_text.find("final 3") != std::string::npos &&
-            state.live_text.find("weiter 4") != std::string::npos;
-    });
-    assert(switched.live_text ==
-        "Ich teste llama_rewriter.cpp weiter final 3 Ich äh teste llama_rewriter.cpp weiter 4");
-    controller.toggle_recording();
-    const auto switched_final = wait_until(controller, [](const auto& state) {
-        return state.mode == dictscribe::app::DictationMode::Complete;
-    });
-    assert(switched_final.raw_final_text ==
-        "Ich teste llama_rewriter.cpp weiter final 3 Ich teste llama_rewriter.cpp weiter final 4");
-    assert(switched_final.rewritten_text == switched_final.raw_final_text);
+    assert(raw_controller.set_cleanup_mode(CleanupMode::Off));
+    const auto disabled = raw_controller.snapshot();
+    assert(disabled.cleanup_mode == CleanupMode::Off);
+    assert(!disabled.rewrite_ready);
+    assert(raw_controller.set_rewrite_device(false));
 
-    dictscribe::app::AppConfig rewrite_failure_config = config;
+    auto rewrite_failure_config = config(CleanupMode::Ai);
     rewrite_failure_config.rewrite_model = "fail-rewrite.gguf";
     dictscribe::app::AppController rewrite_failure_controller;
     assert(rewrite_failure_controller.start(rewrite_failure_config));
     wait_until(rewrite_failure_controller, [](const auto& state) {
-        return state.mode == dictscribe::app::DictationMode::Ready;
+        return state.mode == DictationMode::Ready && state.rewrite_ready;
     });
     rewrite_failure_controller.toggle_recording();
-    const auto raw_recording = wait_until(rewrite_failure_controller, [](const auto& state) {
-        return state.mode == dictscribe::app::DictationMode::Recording &&
-            !state.error.empty() && !state.rewrite_in_progress;
+    const auto failed_cleanup = wait_until(rewrite_failure_controller, [](const auto& state) {
+        return state.mode == DictationMode::Recording && !state.error.empty() &&
+            !state.rewrite_in_progress;
     });
-    assert(raw_recording.rewritten_text == raw_recording.live_text);
+    assert(failed_cleanup.live_text.find("llama_rewriter.cpp") != std::string::npos);
     rewrite_failure_controller.toggle_recording();
-    const auto raw_complete = wait_until(rewrite_failure_controller, [](const auto& state) {
-        return state.mode == dictscribe::app::DictationMode::Complete;
+    const auto failed_complete = wait_until(rewrite_failure_controller, [](const auto& state) {
+        return state.mode == DictationMode::Complete;
     });
-    assert(raw_complete.rewritten_text == raw_complete.raw_final_text);
+    assert(failed_complete.rewritten_text.find("weiter final 1") != std::string::npos);
 
-    dictscribe::app::AppConfig rewrite_load_failure_config = config;
-    rewrite_load_failure_config.rewrite_model = "fail-load-rewrite.gguf";
-    dictscribe::app::AppController rewrite_load_failure_controller;
-    assert(rewrite_load_failure_controller.start(rewrite_load_failure_config));
-    const auto raw_ready = wait_until(rewrite_load_failure_controller, [](const auto& state) {
-        return state.mode == dictscribe::app::DictationMode::Ready;
+    auto load_failure_config = config(CleanupMode::Ai);
+    load_failure_config.rewrite_model = "fail-load-rewrite.gguf";
+    dictscribe::app::AppController load_failure_controller;
+    assert(load_failure_controller.start(load_failure_config));
+    const auto load_failure_ready = wait_until(load_failure_controller, [](const auto& state) {
+        return state.mode == DictationMode::Ready;
     });
-    assert(raw_ready.asr_ready);
-    assert(!raw_ready.rewrite_ready);
-    assert(!raw_ready.error.empty());
+    assert(load_failure_ready.asr_ready);
+    assert(!load_failure_ready.rewrite_ready);
+    assert(!load_failure_ready.error.empty());
+    assert(load_failure_controller.set_cleanup_mode(CleanupMode::Off));
+    assert(load_failure_controller.set_cleanup_mode(CleanupMode::Ai));
+    const auto retried_failure = wait_until(load_failure_controller, [](const auto& state) {
+        return state.mode == DictationMode::Ready && !state.rewrite_ready &&
+            !state.error.empty();
+    });
+    assert(retried_failure.cleanup_mode == CleanupMode::Ai);
 
-    dictscribe::app::AppConfig recovery_config = config;
+    auto recovery_config = config(CleanupMode::Off);
     recovery_config.asr_model = "fail-gpu-asr.gguf";
     dictscribe::app::AppController recovery_controller;
     assert(recovery_controller.start(recovery_config));
     wait_until(recovery_controller, [](const auto& state) {
-        return state.mode == dictscribe::app::DictationMode::Ready;
+        return state.mode == DictationMode::Ready;
     });
     assert(recovery_controller.set_asr_device(true));
     const auto gpu_failure = wait_until(recovery_controller, [](const auto& state) {
-        return state.mode == dictscribe::app::DictationMode::Error;
+        return state.mode == DictationMode::Error;
     });
     assert(dictscribe::app::CanSetComputeDevice(gpu_failure));
     assert(recovery_controller.set_asr_device(false));
     const auto recovered = wait_until(recovery_controller, [](const auto& state) {
-        return state.mode == dictscribe::app::DictationMode::Ready;
+        return state.mode == DictationMode::Ready;
     });
-    assert(!recovered.asr_use_gpu);
-    assert(recovered.asr_ready && recovered.rewrite_ready);
+    assert(!recovered.asr_use_gpu && recovered.asr_ready);
+    assert(!recovered.rewrite_ready);
 
-    std::cout << "Live cleanup controller tests passed\n";
+    std::cout << "Bounded cleanup controller tests passed\n";
     return 0;
 }

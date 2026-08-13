@@ -18,6 +18,7 @@ int main() {
 
     dictscribe::app::AppSettings expected;
     expected.language = "de";
+    expected.cleanup_mode = dictscribe::app::CleanupMode::Ai;
     expected.asr_device = dictscribe::app::ComputeDevice::Gpu;
     expected.rewrite_device = dictscribe::app::ComputeDevice::Cpu;
     expected.overlay_position = dictscribe::app::ScreenPosition{321, 654};
@@ -26,6 +27,7 @@ int main() {
 
     const auto loaded = dictscribe::app::LoadSettings(path);
     assert(loaded.language == "de");
+    assert(loaded.cleanup_mode == dictscribe::app::CleanupMode::Ai);
     assert(loaded.asr_device == dictscribe::app::ComputeDevice::Gpu);
     assert(loaded.rewrite_device == dictscribe::app::ComputeDevice::Cpu);
     assert(loaded.overlay_position.has_value());
@@ -38,6 +40,7 @@ int main() {
     }
     const auto defaults = dictscribe::app::LoadSettings(path);
     assert(defaults.language == "auto");
+    assert(defaults.cleanup_mode == dictscribe::app::CleanupMode::Off);
     assert(defaults.asr_device == dictscribe::app::ComputeDevice::Cpu);
     assert(defaults.rewrite_device == dictscribe::app::ComputeDevice::Cpu);
     assert(!defaults.overlay_position.has_value());

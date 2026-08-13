@@ -277,10 +277,14 @@ private:
         overlay_.update(snapshot, notice_);
         settings_window_.update(settings_view_model(snapshot));
 
-        if (smoke_test_ &&
-            (snapshot.mode == app::DictationMode::Ready ||
-             snapshot.mode == app::DictationMode::Error)) {
-            exit_code_ = snapshot.mode == app::DictationMode::Ready ? 0 : 1;
+        const bool smoke_ready = snapshot.mode == app::DictationMode::Ready &&
+            (snapshot.cleanup_mode == app::CleanupMode::Off || snapshot.rewrite_ready);
+        const bool smoke_failed = snapshot.mode == app::DictationMode::Error ||
+            (snapshot.mode == app::DictationMode::Ready &&
+             snapshot.cleanup_mode == app::CleanupMode::Ai &&
+             !snapshot.rewrite_ready && !snapshot.error.empty());
+        if (smoke_test_ && (smoke_ready || smoke_failed)) {
+            exit_code_ = smoke_ready ? 0 : 1;
             DestroyWindow(control_window_);
             return;
         }
@@ -450,6 +454,7 @@ private:
         ui::SettingsViewModel model;
         model.settings = settings_;
         model.settings.language = snapshot.language;
+        model.settings.cleanup_mode = snapshot.cleanup_mode;
         model.settings.asr_device = snapshot.asr_use_gpu
             ? app::ComputeDevice::Gpu : app::ComputeDevice::Cpu;
         model.settings.rewrite_device = snapshot.rewrite_use_gpu
@@ -477,6 +482,17 @@ private:
         }
         if (action == ui::SettingsAction::LanguageEnglish) {
             select_language("en");
+            return;
+        }
+        if (action == ui::SettingsAction::CleanupOff ||
+            action == ui::SettingsAction::CleanupAi) {
+            const app::CleanupMode mode = action == ui::SettingsAction::CleanupAi
+                ? app::CleanupMode::Ai : app::CleanupMode::Off;
+            if (controller_.set_cleanup_mode(mode)) {
+                settings_.cleanup_mode = mode;
+                persist_settings();
+            }
+            settings_window_.update(settings_view_model(controller_.snapshot()));
             return;
         }
 

@@ -307,6 +307,20 @@ void ApplySettingsAction(WindowState& state, SettingsAction action) {
                 (action == SettingsAction::LanguageEnglish ? 2 : 0));
         return;
     }
+    if (action == SettingsAction::CleanupOff || action == SettingsAction::CleanupAi) {
+        const app::CleanupMode mode = action == SettingsAction::CleanupAi
+            ? app::CleanupMode::Ai : app::CleanupMode::Off;
+        if (state.controller->set_cleanup_mode(mode)) {
+            state.settings->cleanup_mode = mode;
+            std::string error;
+            if (!app::SaveSettings(*state.settings, error)) {
+                state.settings_model.notice = std::move(error);
+            } else {
+                state.settings_model.notice.clear();
+            }
+        }
+        return;
+    }
 
     bool changed = false;
     if (action == SettingsAction::AsrCpu || action == SettingsAction::AsrGpu) {
@@ -807,7 +821,7 @@ int RunDictationWindow(
     glfwWindowHint(GLFW_FOCUS_ON_SHOW, GLFW_TRUE);
     glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER, GLFW_FALSE);
     GLFWwindow* settings_window = glfwCreateWindow(
-        640, 600, "DictScribe Settings", nullptr, window);
+        640, 660, "DictScribe Settings", nullptr, window);
     if (!settings_window) {
         glfwDestroyWindow(window);
         glfwTerminate();
@@ -913,6 +927,7 @@ int RunDictationWindow(
         }
         state.settings_model.settings = settings;
         state.settings_model.settings.language = state.snapshot.language;
+        state.settings_model.settings.cleanup_mode = state.snapshot.cleanup_mode;
         state.settings_model.settings.asr_device = state.snapshot.asr_use_gpu
             ? app::ComputeDevice::Gpu : app::ComputeDevice::Cpu;
         state.settings_model.settings.rewrite_device = state.snapshot.rewrite_use_gpu

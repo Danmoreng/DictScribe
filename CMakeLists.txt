@@ -76,6 +76,13 @@ target_include_directories(dictscribe-app-settings-tests PRIVATE
 )
 add_test(NAME dictscribe_app_settings COMMAND dictscribe-app-settings-tests)
 
+add_executable(dictscribe-semantic-transcript-tests
+    tests/semantic_transcript_test.cpp
+    src/app/semantic_transcript.cpp
+)
+target_include_directories(dictscribe-semantic-transcript-tests PRIVATE src)
+add_test(NAME dictscribe_semantic_transcript COMMAND dictscribe-semantic-transcript-tests)
+
 find_package(Threads REQUIRED)
 
 add_executable(dictscribe-fake-asr-worker tests/fake_asr_worker.cpp)
@@ -87,6 +94,7 @@ endforeach()
 add_executable(dictscribe-app-controller-tests
     tests/app_controller_live_test.cpp
     src/app/app_controller.cpp
+    src/app/semantic_transcript.cpp
     src/app/worker_process.cpp
 )
 target_include_directories(dictscribe-app-controller-tests PRIVATE
@@ -132,6 +140,7 @@ if(DICTSCRIBE_BUILD_UI)
             src/ui/settings_view.cpp
             src/protocol/jsonl_protocol.cpp
             src/app/app_controller.cpp
+            src/app/semantic_transcript.cpp
             src/app/model_discovery.cpp
             src/app/settings.cpp
             src/app/worker_process.cpp
@@ -172,6 +181,7 @@ if(DICTSCRIBE_BUILD_UI)
             src/ui/text_layout.cpp
             src/protocol/jsonl_protocol.cpp
             src/app/app_controller.cpp
+            src/app/semantic_transcript.cpp
             src/app/model_discovery.cpp
             src/app/settings.cpp
             src/app/worker_process.cpp

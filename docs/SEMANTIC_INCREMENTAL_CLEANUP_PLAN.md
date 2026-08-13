@@ -2,6 +2,11 @@
 
 Status: implementation brief for the next DictScribe development session, 2026-08-13.
 
+Implementation status: Phases 0 through 3 are complete on Windows as of
+2026-08-13. AI cleanup remains opt-in because the current Q8 quality gate passes
+only 3 of 7 seed cases. Phase 4 structure preservation and target-application
+multiline verification remain next.
+
 This document is a companion to and partial revision of
 [`INCREMENTAL_CLEANUP_DESIGN.md`](INCREMENTAL_CLEANUP_DESIGN.md). It keeps the
 bounded incremental transcript architecture, but changes four important product

@@ -16,6 +16,7 @@ struct DiscoveryResult {
     bool language_overridden = false;
     bool asr_device_overridden = false;
     bool rewrite_device_overridden = false;
+    bool cleanup_mode_overridden = false;
 };
 
 DiscoveryResult DiscoverConfig(int argc, char** argv);

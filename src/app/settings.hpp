@@ -1,5 +1,7 @@
 #pragma once
 
+#include "app/cleanup_mode.hpp"
+
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -20,6 +22,7 @@ struct ScreenPosition {
 
 struct AppSettings {
     std::string language = "auto";
+    CleanupMode cleanup_mode = CleanupMode::Off;
     ComputeDevice asr_device = ComputeDevice::Cpu;
     ComputeDevice rewrite_device = ComputeDevice::Cpu;
     std::optional<ScreenPosition> overlay_position;
@@ -31,6 +34,7 @@ struct PendingDeviceSettings {
 };
 
 [[nodiscard]] bool IsSupportedLanguage(const std::string& language);
+[[nodiscard]] CleanupMode ParseCleanupMode(const std::string& value);
 [[nodiscard]] const char* ComputeDeviceName(ComputeDevice device);
 [[nodiscard]] std::filesystem::path DefaultSettingsPath();
 [[nodiscard]] AppSettings LoadSettings(const std::filesystem::path& path);

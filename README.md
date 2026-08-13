@@ -157,19 +157,21 @@ Right-click the tray icon to start or stop dictation, open Settings, select
 `Auto`, `Deutsch`, or `English`, or quit DictScribe. The
 default shortcut intentionally avoids PowerToys Run's `Alt+Space` binding.
 
-Language, overlay position, and the independent CPU/GPU choice for the ASR and
-rewrite workers are stored in `%LOCALAPPDATA%\DictScribe\settings.json`.
+Language, cleanup mode, overlay position, and the independent CPU/GPU choice
+for the ASR and rewrite workers are stored in
+`%LOCALAPPDATA%\DictScribe\settings.json`. Cleanup defaults to `Off`, so Qwen is
+not started or loaded until `AI cleanup` is selected.
 Changing a device immediately restarts only the affected local worker. Device
 controls are disabled during an active dictation so a recording cannot be
 discarded by a restart, but remain available after a worker failure for
 recovery. A new device is persisted only after that worker reports a successful
 startup; a failed GPU attempt therefore retains the previously working device
-for the next application launch. Explicit `--language`, `--asr-device`,
-`--rewrite-device`, and `--gpu` arguments override the corresponding stored
-value for that process.
+for the next application launch. Explicit `--language`, `--cleanup`,
+`--asr-device`, `--rewrite-device`, and `--gpu` arguments override the
+corresponding stored value for that process.
 
-To verify model discovery and both worker startups without activating the
-microphone, run:
+To verify model discovery and the workers required by the selected cleanup mode
+without activating the microphone, run:
 
 ```powershell
 $process = Start-Process .\build\core\dictscribe.exe -ArgumentList --smoke-test -PassThru -Wait
@@ -211,8 +213,9 @@ focus from the active application. Press `Ctrl+Alt+Space` or `Enter` to finish
 and insert, or `Escape` to cancel. `Ctrl+Alt+Q` exits the background process.
 The overlay can be dragged, scrolled, and used to select `Auto`, `Deutsch`, or
 `English` while recording continues. Its Settings button opens the same settings
-surface as Windows. ASR and rewrite can independently use CPU or GPU; changing
-one restarts only that worker. Settings are stored in
+surface as Windows. Cleanup can be switched between `Off` and `AI cleanup`.
+ASR and rewrite can independently use CPU or GPU; changing one restarts only
+that worker when it is active. Settings are stored in
 `$XDG_CONFIG_HOME/dictscribe/settings.json`, or
 `~/.config/dictscribe/settings.json` when that variable is unset.
 
@@ -224,18 +227,12 @@ Linux overlay targets native X11 sessions; a Wayland-native global-shortcut and
 insertion implementation is a separate platform milestone. An initial language
 can also be supplied with `--language auto|de|en` or `DICTSCRIBE_LANGUAGE`.
 
-Live requests are bounded to one in-flight rewrite. New ASR partials are
-coalesced for roughly 700 ms, with a two-second maximum wait, so continuous
-speech still produces updates without building an unbounded LLM queue. On CPU,
-the cleaned panel can visibly trail the raw panel by the current model latency;
-the fixed 2B rewrite model is selected to keep that latency suitable for live
-use. Qwen3.5 is forced into its non-thinking mode for this mechanical cleanup
-task and uses Qwen's recommended non-thinking sampling parameters:
-`temperature=0.7`, `top_p=0.8`, `top_k=20`, and `presence_penalty=1.5`. The CPU
-worker uses at most eight threads and abandons a request after 15
-seconds in total, including a possible language-guard retry. This lets the
-controller retain the raw transcript instead of letting a pathological request
-monopolize the machine.
+Live cleanup requests contain only a bounded read-only suffix, editable
+structured tail, and new stable ASR spans. One request may be active and one
+successor is coalesced. Qwen3.5-0.8B Q8_0 runs in non-thinking mode with greedy
+decoding, four CPU threads by default, a 2,048-token context, and a five-second
+deadline. Stopping never waits for cleanup; incomplete or rejected work leaves
+the remaining final ASR text unchanged.
 
 ## Worker protocol
 

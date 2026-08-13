@@ -57,11 +57,11 @@ intended for a responsive input meter; they are not synthesized UI animation.
 Start the worker with:
 
 ```text
-dictscribe-rewrite-worker --stdio --model MODEL.gguf --protocol-version 1
+dictscribe-rewrite-worker --stdio --model MODEL.gguf --protocol-version 2
 ```
 
-The whole-transcript version-1 command remains temporarily available during
-the controller migration:
+The whole-transcript version-1 command remains only for backward-compatible
+worker diagnostics. The DictScribe controller no longer sends it:
 
 ```json
 {"v":1,"type":"rewrite","id":"request-6","requestId":"rewrite-1","language":"de","text":"Ich will äh das Modell ändern."}

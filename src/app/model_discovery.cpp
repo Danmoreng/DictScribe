@@ -192,6 +192,15 @@ DiscoveryResult DiscoverConfig(int argc, char** argv) {
             }
             result.config.rewrite_use_gpu = value == "gpu";
             result.rewrite_device_overridden = true;
+        } else if (argument == "--cleanup") {
+            std::string value;
+            if (!require_string(value)) break;
+            if (value != "off" && value != "ai") {
+                result.error = "Unsupported cleanup mode: " + value + " (expected off or ai)";
+                break;
+            }
+            result.config.cleanup_mode = ParseCleanupMode(value);
+            result.cleanup_mode_overridden = true;
         } else if (argument == "--gpu") {
             result.config.asr_use_gpu = true;
             result.config.rewrite_use_gpu = true;
@@ -225,11 +234,7 @@ DiscoveryResult DiscoverConfig(int argc, char** argv) {
 
     std::vector<std::string> missing;
     if (!IsFile(result.config.asr_worker)) missing.push_back("ASR worker");
-    if (!IsFile(result.config.rewrite_worker)) missing.push_back("rewrite worker");
     if (!IsFile(result.config.asr_model)) missing.push_back("Nemotron ASR model");
-    if (!IsFile(result.config.rewrite_model)) {
-        missing.push_back(std::string(kRewriteModelFilename) + " rewrite model in the Hugging Face cache");
-    }
     if (!missing.empty()) {
         std::ostringstream message;
         message << "Missing required runtime file" << (missing.size() == 1 ? ": " : "s: ");
@@ -247,6 +252,9 @@ DiscoveryResult DiscoverConfig(int argc, char** argv) {
 
 void ApplyStoredSettings(DiscoveryResult& discovery, const AppSettings& settings) {
     if (!discovery.language_overridden) discovery.config.language = settings.language;
+    if (!discovery.cleanup_mode_overridden) {
+        discovery.config.cleanup_mode = settings.cleanup_mode;
+    }
     if (!discovery.asr_device_overridden) {
         discovery.config.asr_use_gpu = settings.asr_device == ComputeDevice::Gpu;
     }
@@ -265,6 +273,7 @@ const char* CommandLineHelp() {
         "  --language CODE        Initial language: auto, de, or en\n"
         "  --asr-device DEVICE    Speech device: cpu or gpu\n"
         "  --rewrite-device DEVICE Cleanup device: cpu or gpu\n"
+        "  --cleanup MODE         Cleanup mode: off or ai\n"
         "  --gpu                  Use the GPU for both workers\n"
         "  --smoke-test           Load both workers without opening a window\n"
         "  --help                 Show this help\n";

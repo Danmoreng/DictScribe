@@ -37,6 +37,7 @@ int main(int argc, char** argv) {
     emit({{"type", "ready"}, {"engine", "fake-asr"}});
     std::string line;
     int session_number = 0;
+    std::string active_language = "de";
     while (std::getline(std::cin, line)) {
         const auto command = nlohmann::json::parse(line);
         const std::string type = command.value("type", "");
@@ -52,6 +53,7 @@ int main(int argc, char** argv) {
                 continue;
             }
             ++session_number;
+            active_language = language == "auto" ? "de" : language;
             const std::string session = command.value("sessionId", "");
             emit({{"type", "recording_started"}, {"sessionId", session}});
             emit({
@@ -60,11 +62,12 @@ int main(int argc, char** argv) {
                 {"rms", 0.18},
                 {"peak", 0.72},
             });
-            const std::string first = language == "en" ? "I am testing" : "Ich äh teste";
-            const std::string second = language == "en"
-                ? "I am testing llama_rewriter.cpp"
-                : "Ich äh teste llama_rewriter.cpp";
-            const std::string third = second + (language == "en" ? " further " : " weiter ") +
+            const std::string first = active_language == "en"
+                ? "I am testing the local speech cleanup pipeline with several stable words"
+                : "Ich teste die lokale Spracherkennung mit mehreren stabilen Wörtern im Diktat";
+            const std::string second = first + (active_language == "en"
+                ? " and llama_rewriter.cpp" : " und llama_rewriter.cpp");
+            const std::string third = second + (active_language == "en" ? " further " : " weiter ") +
                 std::to_string(session_number);
             emit({{"type", "transcript_update"}, {"sessionId", session}, {"text", first}});
             std::this_thread::sleep_for(std::chrono::milliseconds(80));
@@ -81,10 +84,13 @@ int main(int argc, char** argv) {
             });
         } else if (type == "stop") {
             const std::string session = command.value("sessionId", "");
+            const std::string final_text = active_language == "en"
+                ? "I am testing the local speech cleanup pipeline with several stable words and llama_rewriter.cpp further final " + std::to_string(session_number)
+                : "Ich teste die lokale Spracherkennung mit mehreren stabilen Wörtern im Diktat und llama_rewriter.cpp weiter final " + std::to_string(session_number);
             emit({
                 {"type", "recording_finalized"},
                 {"sessionId", session},
-                {"text", "Ich teste llama_rewriter.cpp weiter final " + std::to_string(session_number)},
+                {"text", final_text},
             });
         } else if (type == "cancel") {
             emit({{"type", "recording_cancelled"}, {"sessionId", command.value("sessionId", "")}});
