@@ -4,6 +4,7 @@ param(
     [switch]$SkipUi,
     [ValidateRange(1, 64)]
     [int]$Jobs = [Math]::Min([Environment]::ProcessorCount, 8),
+    [string]$CudaArch = "native",
     [string]$VcpkgRoot = $env:VCPKG_ROOT,
     [string]$SkiaDir = $env:DICTSCRIBE_SKIA_DIR,
     [string]$SkiaOutDir = $env:DICTSCRIBE_SKIA_OUT_DIR
@@ -124,10 +125,12 @@ if (-not [string]::IsNullOrWhiteSpace($VcpkgRoot)) {
 }
 
 if ($Cuda) {
-    $bash = Get-Command bash -ErrorAction Stop
-    & $bash.Source (Join-Path $ProjectRoot "third_party\NeMo-Speech.cpp\scripts\apply-ggml-patches.sh")
+    $patchScript = Join-Path $ProjectRoot `
+        "third_party\NeMo-Speech.cpp\scripts\windows\apply-ggml-patches.ps1"
+    & $patchScript
     Assert-NativeSuccess "NeMo GGML patch application"
-    $nemoArgs += "-DGGML_CUDA=ON", "-DNEMO_SPEECH_GGML_PATCHED=ON"
+    $nemoArgs += "-DGGML_CUDA=ON", "-DNEMO_SPEECH_GGML_PATCHED=ON",
+        "-DCMAKE_CUDA_ARCHITECTURES=$CudaArch"
 } else {
     $nemoArgs += "-DGGML_CUDA=OFF", "-DNEMO_SPEECH_GGML_PATCHED=OFF"
 }
@@ -149,10 +152,14 @@ cmake --build (Join-Path $BuildRoot "asr-worker") --config Release --parallel $J
 Assert-NativeSuccess "ASR worker build"
 
 $cudaFlag = if ($Cuda) { "ON" } else { "OFF" }
+$rewriteCudaArgs = @()
+if ($Cuda) {
+    $rewriteCudaArgs += "-DCMAKE_CUDA_ARCHITECTURES=$CudaArch"
+}
 cmake -S (Join-Path $ProjectRoot "cmake\rewrite-worker") `
     -B (Join-Path $BuildRoot "rewrite-worker") @generator `
     -DCMAKE_BUILD_TYPE=Release `
-    "-DDICTSCRIBE_ENABLE_CUDA=$cudaFlag"
+    "-DDICTSCRIBE_ENABLE_CUDA=$cudaFlag" @rewriteCudaArgs
 Assert-NativeSuccess "Rewrite worker configuration"
 cmake --build (Join-Path $BuildRoot "rewrite-worker") --config Release --parallel $Jobs
 Assert-NativeSuccess "Rewrite worker build"

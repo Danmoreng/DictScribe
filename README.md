@@ -72,6 +72,16 @@ loads the Visual Studio compiler environment automatically):
 ctest --test-dir build\core --output-on-failure
 ```
 
+Build both inference workers with CUDA support using:
+
+```powershell
+.\scripts\build.ps1 -Cuda
+```
+
+The Windows CUDA build targets the locally detected GPU architecture by
+default. Release builders can override it with `-CudaArch` when binaries must
+support a different architecture.
+
 The Windows build reuses the compiled Skia checkout from the neighboring
 `simple-markdown-viewer` repository by default. Set `DICTSCRIBE_SKIA_DIR` and
 `DICTSCRIBE_SKIA_OUT_DIR` to use another checkout, or pass `-SkipUi` when only
