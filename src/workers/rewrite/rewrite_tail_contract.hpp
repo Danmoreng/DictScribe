@@ -19,5 +19,9 @@ bool parse_replacement_tail_json(
     bool meaningful_input,
     std::string& replacement_tail,
     std::string& error);
+bool validate_replacement_tail(
+    const RewriteTailInput& input,
+    std::string_view replacement_tail,
+    std::string& error);
 
 } // namespace dictscribe::rewrite

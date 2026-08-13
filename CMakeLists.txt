@@ -51,6 +51,7 @@ add_test(NAME dictscribe_technical_literals COMMAND dictscribe-technical-literal
 add_executable(dictscribe-rewrite-tail-contract-tests
     tests/rewrite_tail_contract_test.cpp
     src/workers/rewrite/rewrite_tail_contract.cpp
+    src/workers/rewrite/technical_literals.cpp
 )
 target_include_directories(dictscribe-rewrite-tail-contract-tests PRIVATE
     src

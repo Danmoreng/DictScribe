@@ -1,42 +1,22 @@
 #!/usr/bin/env python3
-"""Run the Phase-1 rewrite-model compatibility and prompt smoke test."""
+"""Run the scored semantic rewrite model quality gate."""
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 import time
 from pathlib import Path
 
 
-CASES = (
-    (
-        "German correction and paragraph",
-        "de",
-        "Das Modell braucht zwei Gigabyte nein achthundert Megabyte neuer Absatz dadurch sollte es auch auf kleineren Geräten laufen",
-    ),
-    (
-        "German shopping list",
-        "de",
-        "Einkaufsliste Doppelpunkt Brot Mehl Milch Müsli",
-    ),
-    (
-        "English ordered list",
-        "en",
-        "there are three tasks first load the model second clean the current tail and third insert the result",
-    ),
-    (
-        "no-op prose",
-        "en",
-        "Qwen3.5-0.8B is the first model we will benchmark.",
-    ),
-    (
-        "mixed technical text",
-        "en",
-        "Set DICTSCRIBE_REWRITE_MODEL to C colon slash models slash Qwen3.5-0.8B-Q8_0 dot gguf",
-    ),
+DEFAULT_CORPUS = (
+    Path(__file__).resolve().parent.parent
+    / "tests"
+    / "data"
+    / "rewrite_tail_benchmark.json"
 )
 
 
@@ -61,15 +41,86 @@ def wait_for(process: subprocess.Popen[str], expected: str) -> dict:
             return message
 
 
+def normalized(text: str) -> str:
+    return " ".join(text.casefold().split())
+
+
+def evaluate_check(output: str, check: dict) -> str | None:
+    check_type = check["type"]
+    comparable = normalized(output)
+    if check_type == "contains":
+        value = normalized(check["value"])
+        return None if value in comparable else f"missing required text: {check['value']}"
+    if check_type == "containsAny":
+        values = check["values"]
+        return None if any(normalized(value) in comparable for value in values) else (
+            "missing every accepted alternative: " + ", ".join(values)
+        )
+    if check_type == "notContains":
+        value = normalized(check["value"])
+        return None if value not in comparable else f"contains forbidden text: {check['value']}"
+    if check_type == "equalsNormalized":
+        return None if comparable == normalized(check["value"]) else "normalized output changed"
+    if check_type == "paragraphBreak":
+        return None if re.search(r"\n\s*\n", output) else "missing paragraph break"
+    if check_type == "regex":
+        return None if re.search(check["value"], output, re.IGNORECASE) else (
+            f"did not match regex: {check['value']}"
+        )
+    if check_type == "unorderedList":
+        lines = [
+            normalized(match.group(1))
+            for line in output.splitlines()
+            if (match := re.match(r"^\s*-\s+(.+?)\s*$", line))
+        ]
+        expected = [normalized(item) for item in check["items"]]
+        if len(lines) < len(expected):
+            return f"expected at least {len(expected)} unordered list items, got {len(lines)}"
+        for item in expected:
+            if not any(item in line for line in lines):
+                return f"missing unordered list item: {item}"
+        return None
+    if check_type == "orderedList":
+        lines = [
+            normalized(match.group(1))
+            for line in output.splitlines()
+            if (match := re.match(r"^\s*\d+[.)]\s+(.+?)\s*$", line))
+        ]
+        expected = [normalized(item) for item in check["items"]]
+        if len(lines) < len(expected):
+            return f"expected at least {len(expected)} ordered list items, got {len(lines)}"
+        for index, item in enumerate(expected):
+            if item not in lines[index]:
+                return f"ordered list item {index + 1} does not contain: {item}"
+        return None
+    raise ValueError(f"unknown benchmark check type: {check_type}")
+
+
+def evaluate_case(output: str, case: dict) -> list[str]:
+    return [
+        failure
+        for check in case["checks"]
+        if (failure := evaluate_check(output, check)) is not None
+    ]
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--worker", required=True, type=Path)
     parser.add_argument("--model", required=True, type=Path)
+    parser.add_argument("--corpus", type=Path, default=DEFAULT_CORPUS)
+    parser.add_argument("--json-report", type=Path)
     args = parser.parse_args()
     if not args.worker.is_file():
         parser.error(f"worker not found: {args.worker}")
     if not args.model.is_file():
         parser.error(f"model not found: {args.model}")
+    if not args.corpus.is_file():
+        parser.error(f"benchmark corpus not found: {args.corpus}")
+
+    corpus = json.loads(args.corpus.read_text(encoding="utf-8"))
+    if corpus.get("schemaVersion") != 1 or not isinstance(corpus.get("cases"), list):
+        parser.error("unsupported benchmark corpus schema")
 
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
@@ -101,34 +152,71 @@ def main() -> int:
             raise RuntimeError("the GGUF does not expose a chat template")
         print(f"Loaded architecture={architecture}, chat_template={has_template}")
 
-        for number, (name, language, transcript) in enumerate(CASES, start=1):
+        results = []
+        for number, case in enumerate(corpus["cases"], start=1):
             request_id = f"smoke-{number}"
             started = time.perf_counter()
-            send(
-                process,
-                {
-                    "v": 2,
-                    "type": "rewrite_tail",
-                    "id": request_id,
-                    "requestId": request_id,
-                    "sessionId": "smoke-session",
-                    "tailRevision": number - 1,
-                    "firstStableSpanId": number,
-                    "lastStableSpanId": number,
-                    "languageHint": language,
-                    "readOnlyContext": "",
-                    "editableTail": "",
-                    "newAsrText": transcript,
-                },
-            )
-            result = wait_for(process, "rewrite_tail_completed")
-            output = result.get("replacementTail", "")
-            if not output:
-                raise RuntimeError(f"{name}: empty output")
-            if "<think>" in output or "</think>" in output:
-                raise RuntimeError(f"{name}: thinking content leaked into the output")
+            output = ""
+            failures = []
+            try:
+                send(
+                    process,
+                    {
+                        "v": 2,
+                        "type": "rewrite_tail",
+                        "id": request_id,
+                        "requestId": request_id,
+                        "sessionId": "smoke-session",
+                        "tailRevision": number - 1,
+                        "firstStableSpanId": number,
+                        "lastStableSpanId": number,
+                        "languageHint": case["languageHint"],
+                        "readOnlyContext": case["readOnlyContext"],
+                        "editableTail": case["editableTail"],
+                        "newAsrText": case["newAsrText"],
+                    },
+                )
+                result = wait_for(process, "rewrite_tail_completed")
+                output = result.get("replacementTail", "")
+                if not output:
+                    failures.append("worker returned an empty tail")
+                else:
+                    failures.extend(evaluate_case(output, case))
+            except RuntimeError as exception:
+                failures.append(str(exception))
             elapsed = time.perf_counter() - started
-            print(f"\n[{name}] {elapsed:.2f}s\n{output}")
+            status = "PASS" if not failures else "FAIL"
+            print(f"\n[{status}] {case['name']} ({elapsed:.2f}s)\n{output or '<no output>'}")
+            for failure in failures:
+                print(f"  - {failure}")
+            results.append(
+                {
+                    "id": case["id"],
+                    "name": case["name"],
+                    "passed": not failures,
+                    "elapsedSeconds": round(elapsed, 3),
+                    "output": output,
+                    "failures": failures,
+                }
+            )
+
+        passed = sum(1 for result in results if result["passed"])
+        report = {
+            "model": str(args.model.resolve()),
+            "architecture": architecture,
+            "chatTemplateAvailable": has_template,
+            "passed": passed,
+            "total": len(results),
+            "cases": results,
+        }
+        print(f"\nQuality gate: {passed}/{len(results)} cases passed")
+        if args.json_report:
+            args.json_report.parent.mkdir(parents=True, exist_ok=True)
+            args.json_report.write_text(
+                json.dumps(report, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        return 0 if passed == len(results) else 1
     finally:
         if process.poll() is None:
             try:
@@ -137,7 +225,7 @@ def main() -> int:
             except (BrokenPipeError, subprocess.TimeoutExpired):
                 process.kill()
                 process.wait()
-    return 0
+    return 1
 
 
 if __name__ == "__main__":

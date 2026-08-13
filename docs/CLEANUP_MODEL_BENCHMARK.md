@@ -53,6 +53,29 @@ but still failed two safety-critical cases:
 A follow-up generic instruction about compound replacement values and dictated
 technical separators regressed list behavior in both models and was rejected.
 
+## Automated quality gate
+
+The seed scenarios now live in
+`tests/data/rewrite_tail_benchmark.json`. The benchmark runner evaluates exact
+or normalized preservation, required and forbidden content, paragraph breaks,
+ordered and unordered list shapes, technical-path structure, prompt-injection
+handling, and incremental list continuation. It exits non-zero when any case
+fails and can write a machine-readable JSON report.
+
+The first scored Qwen3.5-0.8B Q8_0 run passed 3 of 7 cases:
+
+- passed: German shopping list, no-op prose, prompt-injection-as-content;
+- failed: German correction/paragraph, English ordered list, dictated technical
+  path, incremental list continuation.
+
+The worker now also applies a model-independent safety validator before
+returning a tail. It rejects invalid UTF-8, model commentary, substantial
+read-only suffix repetition, new or duplicated digit anchors, and technical
+anchor components absent from editable input. These failures are recoverable,
+so the controller retains raw ASR text. Language-independent validation cannot
+prove that one spelled-out number word was not changed into another; the scored
+correction case therefore remains a required model-quality gate.
+
 ## Current decision
 
 Runtime compatibility and CPU latency are good enough to continue developing
@@ -63,10 +86,9 @@ technical anchors.
 
 Before the Phase-3 controller migration becomes the active default:
 
-1. turn the seed scenarios into a scored corpus with explicit safety and shape
-   assertions;
-2. add numeric and technical-anchor validation with raw-tail fallback;
-3. decide whether prompt work is sufficient or a task-specific LoRA/SFT or a
+1. improve the failing scored cases without adding language-specific command
+   rules;
+2. decide whether prompt work is sufficient or a task-specific LoRA/SFT or a
    different small Apache-2.0 model is required.
 
 Q8_0 remains the development quantization for the current implementation
@@ -79,5 +101,6 @@ Run the current manual smoke corpus with:
 ```powershell
 python scripts/smoke-rewrite-model.py `
   --worker build/rewrite-worker/bin/dictscribe-rewrite-worker.exe `
-  --model C:/path/to/Qwen3.5-0.8B-Q8_0.gguf
+  --model C:/path/to/Qwen3.5-0.8B-Q8_0.gguf `
+  --json-report build/rewrite-q8-quality-report.json
 ```

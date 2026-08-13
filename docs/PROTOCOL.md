@@ -98,5 +98,15 @@ decoding, a dynamically bounded output cap, and a five-second deadline. Any
 validation, generation, timeout, or restoration failure produces a recoverable
 error; callers must retain raw ASR text.
 
+Post-generation validation rejects invalid UTF-8, reasoning tags, code fences,
+substantial repetition of the read-only suffix, newly introduced or duplicated
+digit anchors, and technical anchors containing components absent from the
+editable input. Ordered-list numbers at line starts are structural and do not
+count as dictated numeric anchors. A path assembled from dictated components is
+allowed, but an invented path component is not. Spelled-out number words cannot
+be validated safely without language-specific rules; those remain covered by
+the scored model-quality corpus and raw-tail fallback until a model passes the
+semantic gate.
+
 Only one `rewrite_tail` request may be active per worker. The controller may
 coalesce newer stable ASR spans but must not create an unbounded request queue.

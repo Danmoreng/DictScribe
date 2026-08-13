@@ -234,6 +234,10 @@ bool LlamaRewriter::rewrite_tail(
     if (!restore_technical_literals(protected_transcript, replacement_tail, error)) {
         return false;
     }
+    if (!validate_replacement_tail(input, replacement_tail, error)) {
+        replacement_tail.clear();
+        return false;
+    }
     return true;
 }
 
