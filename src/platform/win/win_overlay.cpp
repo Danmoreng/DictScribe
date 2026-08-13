@@ -34,9 +34,12 @@ namespace {
 
 constexpr wchar_t kOverlayClass[] = L"DictScribeOverlayWindow";
 constexpr wchar_t kBackdropClass[] = L"DictScribeBackdropWindow";
-constexpr int kLogicalWidth = 720;
+constexpr int kDefaultLogicalWidth = 720;
+constexpr int kDefaultLogicalHeight = 326;
+constexpr int kMinimumLogicalWidth = 560;
 constexpr int kMinimumLogicalHeight = 244;
-constexpr int kMaximumLogicalHeight = 460;
+constexpr int kMaximumLogicalWidth = 1600;
+constexpr int kMaximumLogicalHeight = 900;
 constexpr float kCornerRadius = 8.0F;
 constexpr float kHeaderHeight = 52.0F;
 constexpr float kFooterHeight = 54.0F;
@@ -249,8 +252,9 @@ struct WinOverlay::Impl {
     std::string notice;
     std::function<void(std::string)> language_handler;
     std::function<void()> settings_handler;
-    std::function<void(POINT)> position_handler;
+    std::function<void(POINT, SIZE)> geometry_handler;
     std::optional<POINT> preferred_position;
+    std::optional<SIZE> preferred_size;
     std::array<float, 16> level_history{};
     int scroll_line = 0;
     int max_scroll_line = 0;
@@ -270,24 +274,14 @@ struct WinOverlay::Impl {
     float scrollbar_thumb_bottom = 0.0F;
     float scrollbar_drag_offset = 0.0F;
 
-    std::vector<std::string> wrapped_body(float width = static_cast<float>(kLogicalWidth)) const {
+    std::vector<std::string> wrapped_body(float width = static_cast<float>(kDefaultLogicalWidth)) const {
         const SkFont body_font(regular, 16.5F);
         const std::string display = DisplayText(snapshot);
         const std::string body = display.empty() ? PlaceholderText(snapshot) : display;
         return WrapText(body, body_font, width - 78.0F);
     }
 
-    int desired_logical_height() const {
-        if (!regular) return kMinimumLogicalHeight;
-        const int content_lines = std::clamp(
-            static_cast<int>(wrapped_body().size()), 3, 13);
-        const int desired = static_cast<int>(
-            kBodyTop + content_lines * kBodyLineHeight + 16.0F + kFooterHeight);
-        const int minimum = language_menu_open ? 326 : kMinimumLogicalHeight;
-        return std::clamp(std::max(desired, minimum), kMinimumLogicalHeight, kMaximumLogicalHeight);
-    }
-
-    SkRect language_badge_rect(float width = static_cast<float>(kLogicalWidth)) const {
+    SkRect language_badge_rect(float width = static_cast<float>(kDefaultLogicalWidth)) const {
         const std::string language = LanguageBadgeText(snapshot);
         const float badge_width = language == "AUTO" ? 62.0F : 72.0F;
         return SkRect::MakeXYWH(width - 150.0F - badge_width, 11.0F, badge_width, 30.0F);
@@ -303,25 +297,43 @@ struct WinOverlay::Impl {
             static_cast<float>(client_y) / scale);
     }
 
-    SkRect settings_button_rect() const {
-        return SkRect::MakeXYWH(398.0F, 11.0F, 88.0F, 30.0F);
+    SkRect settings_button_rect(float width = static_cast<float>(kDefaultLogicalWidth)) const {
+        const SkRect badge = language_badge_rect(width);
+        return SkRect::MakeXYWH(badge.left() - 100.0F, 11.0F, 88.0F, 30.0F);
+    }
+
+    int visible_language_rows() const {
+        if (!hwnd || dpi == 0) return 8;
+        RECT client{};
+        GetClientRect(hwnd, &client);
+        const float logical_height = static_cast<float>(client.bottom - client.top) * 96.0F /
+            static_cast<float>(dpi);
+        return std::clamp(
+            static_cast<int>((logical_height - 53.0F) / 32.0F), 3, 8);
     }
 
     bool settings_button_contains(int client_x, int client_y) const {
         const float scale = static_cast<float>(dpi) / 96.0F;
-        return settings_button_rect().contains(
+        RECT client{};
+        GetClientRect(hwnd, &client);
+        const float width = static_cast<float>(client.right - client.left) / scale;
+        return settings_button_rect(width).contains(
             static_cast<float>(client_x) / scale,
             static_cast<float>(client_y) / scale);
     }
 
-    SkRect language_menu_rect(float width = static_cast<float>(kLogicalWidth)) const {
+    SkRect language_menu_rect(float width = static_cast<float>(kDefaultLogicalWidth)) const {
         const SkRect badge = language_badge_rect(width);
-        return SkRect::MakeXYWH(badge.right() - 270.0F, badge.bottom() + 6.0F, 270.0F, 268.0F);
+        return SkRect::MakeXYWH(
+            badge.right() - 270.0F,
+            badge.bottom() + 6.0F,
+            270.0F,
+            12.0F + static_cast<float>(visible_language_rows()) * 32.0F);
     }
 
     SkRect language_option_rect(
         int row,
-        float width = static_cast<float>(kLogicalWidth)) const {
+        float width = static_cast<float>(kDefaultLogicalWidth)) const {
         const SkRect menu = language_menu_rect(width);
         return SkRect::MakeXYWH(
             menu.left() + 6.0F,
@@ -338,7 +350,7 @@ struct WinOverlay::Impl {
         const float width = static_cast<float>(client.right - client.left) / scale;
         const float logical_x = static_cast<float>(client_x) / scale;
         const float logical_y = static_cast<float>(client_y) / scale;
-        for (int row = 0; row < 8; ++row) {
+        for (int row = 0; row < visible_language_rows(); ++row) {
             if (language_option_rect(row, width).contains(logical_x, logical_y)) {
                 const int option = language_menu_scroll + row;
                 return option < static_cast<int>(app::kLanguageOptions.size()) ? option : -1;
@@ -354,14 +366,15 @@ struct WinOverlay::Impl {
     }
 
     int maximum_language_scroll() const {
-        return std::max(0, static_cast<int>(app::kLanguageOptions.size()) - 8);
+        return std::max(
+            0, static_cast<int>(app::kLanguageOptions.size()) - visible_language_rows());
     }
 
     void ensure_language_visible(int option) {
         if (option < language_menu_scroll) {
             language_menu_scroll = option;
-        } else if (option >= language_menu_scroll + 8) {
-            language_menu_scroll = option - 7;
+        } else if (option >= language_menu_scroll + visible_language_rows()) {
+            language_menu_scroll = option - visible_language_rows() + 1;
         }
         language_menu_scroll = std::clamp(
             language_menu_scroll, 0, maximum_language_scroll());
@@ -400,7 +413,6 @@ struct WinOverlay::Impl {
             }
             language_menu_previous_foreground = nullptr;
         }
-        resize_to_content();
         InvalidateRect(hwnd, nullptr, FALSE);
     }
 
@@ -444,45 +456,6 @@ struct WinOverlay::Impl {
             rect.right - rect.left,
             rect.bottom - rect.top,
             SWP_NOACTIVATE | (show ? SWP_SHOWWINDOW : 0));
-    }
-
-    void resize_to_content() {
-        if (!hwnd || !IsWindowVisible(hwnd)) return;
-        RECT rect{};
-        GetWindowRect(hwnd, &rect);
-        const int width = rect.right - rect.left;
-        const int new_height = MulDiv(desired_logical_height(), static_cast<int>(dpi), 96);
-        if (new_height == rect.bottom - rect.top) return;
-
-        HMONITOR monitor = MonitorFromRect(&rect, MONITOR_DEFAULTTONEAREST);
-        MONITORINFO info{};
-        info.cbSize = sizeof(info);
-        GetMonitorInfoW(monitor, &info);
-        int x = rect.left;
-        int y = rect.top;
-        x = std::clamp(
-            x,
-            static_cast<int>(info.rcWork.left) + 8,
-            static_cast<int>(info.rcWork.right) - width - 8);
-        y = std::clamp(
-            y,
-            static_cast<int>(info.rcWork.top) + 8,
-            static_cast<int>(info.rcWork.bottom) - new_height - 8);
-        release_surface();
-        SetWindowPos(
-            hwnd,
-            nullptr,
-            x,
-            y,
-            width,
-            new_height,
-            SWP_NOACTIVATE | SWP_NOZORDER);
-        sync_backdrop(true);
-        if (preferred_position &&
-            (preferred_position->x != x || preferred_position->y != y)) {
-            preferred_position = POINT{x, y};
-            if (position_handler) position_handler(*preferred_position);
-        }
     }
 
     void release_surface() {
@@ -537,7 +510,31 @@ struct WinOverlay::Impl {
             return 1;
         case WM_MOUSEACTIVATE:
             return self->language_menu_open ? MA_ACTIVATE : MA_NOACTIVATE;
+        case WM_NCCALCSIZE:
+            if (w_param) return 0;
+            break;
         case WM_NCHITTEST: {
+            const POINT screen_point{GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param)};
+            RECT window_rect{};
+            GetWindowRect(hwnd, &window_rect);
+            const int edge = std::max(5, MulDiv(7, static_cast<int>(self->dpi), 96));
+            const int corner = std::max(edge, MulDiv(16, static_cast<int>(self->dpi), 96));
+            const bool left = screen_point.x < window_rect.left + edge;
+            const bool right = screen_point.x >= window_rect.right - edge;
+            const bool top = screen_point.y < window_rect.top + edge;
+            const bool bottom = screen_point.y >= window_rect.bottom - edge;
+            if (screen_point.x < window_rect.left + corner &&
+                screen_point.y < window_rect.top + corner) return HTTOPLEFT;
+            if (screen_point.x >= window_rect.right - corner &&
+                screen_point.y < window_rect.top + corner) return HTTOPRIGHT;
+            if (screen_point.x < window_rect.left + corner &&
+                screen_point.y >= window_rect.bottom - corner) return HTBOTTOMLEFT;
+            if (screen_point.x >= window_rect.right - corner &&
+                screen_point.y >= window_rect.bottom - corner) return HTBOTTOMRIGHT;
+            if (left) return HTLEFT;
+            if (right) return HTRIGHT;
+            if (top) return HTTOP;
+            if (bottom) return HTBOTTOM;
             POINT point{GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param)};
             ScreenToClient(hwnd, &point);
             if (self->language_menu_open) return HTCLIENT;
@@ -593,7 +590,11 @@ struct WinOverlay::Impl {
                 static_cast<float>(self->dpi);
             const float logical_y = static_cast<float>(GET_Y_LPARAM(l_param)) * 96.0F /
                 static_cast<float>(self->dpi);
-            if (logical_x >= static_cast<float>(kLogicalWidth) - 28.0F &&
+            RECT client{};
+            GetClientRect(hwnd, &client);
+            const float logical_width = static_cast<float>(client.right - client.left) * 96.0F /
+                static_cast<float>(self->dpi);
+            if (logical_x >= logical_width - 28.0F &&
                 logical_y >= self->scrollbar_track_top &&
                 logical_y <= self->scrollbar_track_bottom && self->max_scroll_line > 0) {
                 self->dragging_scrollbar = true;
@@ -628,8 +629,11 @@ struct WinOverlay::Impl {
             if (self->language_menu_open) {
                 if (w_param == VK_UP) self->move_language_highlight(-1);
                 else if (w_param == VK_DOWN) self->move_language_highlight(1);
-                else if (w_param == VK_PRIOR) self->move_language_highlight(-8);
-                else if (w_param == VK_NEXT) self->move_language_highlight(8);
+                else if (w_param == VK_PRIOR) {
+                    self->move_language_highlight(-self->visible_language_rows());
+                } else if (w_param == VK_NEXT) {
+                    self->move_language_highlight(self->visible_language_rows());
+                }
                 else if (w_param == VK_HOME) {
                     self->hovered_language_option = 0;
                     self->ensure_language_visible(0);
@@ -709,10 +713,26 @@ struct WinOverlay::Impl {
             RECT rect{};
             if (GetWindowRect(hwnd, &rect)) {
                 self->preferred_position = POINT{rect.left, rect.top};
-                if (self->position_handler) {
-                    self->position_handler(*self->preferred_position);
+                self->preferred_size = SIZE{
+                    MulDiv(rect.right - rect.left, 96, static_cast<int>(self->dpi)),
+                    MulDiv(rect.bottom - rect.top, 96, static_cast<int>(self->dpi)),
+                };
+                if (self->geometry_handler) {
+                    self->geometry_handler(*self->preferred_position, *self->preferred_size);
                 }
             }
+            return 0;
+        }
+        case WM_GETMINMAXINFO: {
+            auto* limits = reinterpret_cast<MINMAXINFO*>(l_param);
+            limits->ptMinTrackSize.x = MulDiv(
+                kMinimumLogicalWidth, static_cast<int>(self->dpi), 96);
+            limits->ptMinTrackSize.y = MulDiv(
+                kMinimumLogicalHeight, static_cast<int>(self->dpi), 96);
+            limits->ptMaxTrackSize.x = MulDiv(
+                kMaximumLogicalWidth, static_cast<int>(self->dpi), 96);
+            limits->ptMaxTrackSize.y = MulDiv(
+                kMaximumLogicalHeight, static_cast<int>(self->dpi), 96);
             return 0;
         }
         case WM_SETCURSOR: {
@@ -760,6 +780,13 @@ struct WinOverlay::Impl {
             }
             return result;
         }
+        case WM_SIZE:
+            InvalidateRect(hwnd, nullptr, FALSE);
+            if (IsWindowVisible(hwnd)) {
+                self->sync_backdrop(true);
+                UpdateWindow(hwnd);
+            }
+            return 0;
         case WM_SHOWWINDOW:
             if (w_param) self->sync_backdrop(true);
             else if (self->backdrop_hwnd) ShowWindow(self->backdrop_hwnd, SW_HIDE);
@@ -833,16 +860,27 @@ struct WinOverlay::Impl {
         blend.SourceConstantAlpha = 255;
         blend.AlphaFormat = AC_SRC_ALPHA;
         HDC screen_dc = GetDC(nullptr);
-        UpdateLayeredWindow(
-            hwnd,
-            screen_dc,
-            &destination,
-            &size,
-            surface_dc,
-            &source,
-            0,
-            &blend,
-            ULW_ALPHA);
+        UPDATELAYEREDWINDOWINFO update{};
+        update.cbSize = sizeof(update);
+        update.hdcDst = screen_dc;
+        update.pptDst = &destination;
+        update.psize = &size;
+        update.hdcSrc = surface_dc;
+        update.pptSrc = &source;
+        update.pblend = &blend;
+        update.dwFlags = ULW_ALPHA | ULW_EX_NORESIZE;
+        if (!UpdateLayeredWindowIndirect(hwnd, &update)) {
+            UpdateLayeredWindow(
+                hwnd,
+                screen_dc,
+                &destination,
+                &size,
+                surface_dc,
+                &source,
+                0,
+                &blend,
+                ULW_ALPHA);
+        }
         ReleaseDC(nullptr, screen_dc);
         EndPaint(hwnd, &paint);
     }
@@ -925,7 +963,7 @@ struct WinOverlay::Impl {
             canvas->drawLine(chevron_x, 27.0F, chevron_x + 3.0F, 24.0F, chevron);
         }
 
-        const SkRect settings_rect = settings_button_rect();
+        const SkRect settings_rect = settings_button_rect(width);
         canvas->drawRoundRect(
             settings_rect,
             7.0F,
@@ -960,7 +998,8 @@ struct WinOverlay::Impl {
         const auto lines = wrapped_body(width);
         const float body_bottom = height - kFooterHeight - 16.0F;
         visible_line_count = std::max(
-            1, static_cast<int>(std::floor((body_bottom - kBodyTop) / kBodyLineHeight)));
+            1, 1 + static_cast<int>(
+                std::floor((body_bottom - kBodyTop) / kBodyLineHeight)));
         max_scroll_line = std::max(0, static_cast<int>(lines.size()) - visible_line_count);
         if (!user_scrolled) scroll_line = max_scroll_line;
         scroll_line = std::clamp(scroll_line, 0, max_scroll_line);
@@ -1082,7 +1121,8 @@ struct WinOverlay::Impl {
                 menu_border);
 
             const int selected = static_cast<int>(app::LanguageOptionIndex(snapshot.language));
-            for (int row = 0; row < 8; ++row) {
+            const int visible_rows = visible_language_rows();
+            for (int row = 0; row < visible_rows; ++row) {
                 const int option = language_menu_scroll + row;
                 if (option >= static_cast<int>(app::kLanguageOptions.size())) break;
                 const SkRect item = language_option_rect(row, width);
@@ -1117,7 +1157,7 @@ struct WinOverlay::Impl {
                     option == selected ? kText : kMuted);
             }
             const float track_height = menu_rect.height() - 20.0F;
-            const float thumb_height = track_height * 8.0F /
+            const float thumb_height = track_height * static_cast<float>(visible_rows) /
                 static_cast<float>(app::kLanguageOptions.size());
             const float thumb_y = menu_rect.top() + 10.0F +
                 (track_height - thumb_height) * static_cast<float>(language_menu_scroll) /
@@ -1139,6 +1179,20 @@ struct WinOverlay::Impl {
             kCornerRadius,
             kCornerRadius,
             border);
+
+        SkPaint resize_grip = Fill(SkColorSetARGB(150, 158, 167, 184));
+        resize_grip.setStyle(SkPaint::kStroke_Style);
+        resize_grip.setStrokeWidth(1.2F);
+        resize_grip.setStrokeCap(SkPaint::kRound_Cap);
+        for (int offset = 0; offset < 3; ++offset) {
+            const float inset = 6.0F + static_cast<float>(offset) * 4.0F;
+            canvas->drawLine(
+                width - inset - 5.0F,
+                height - 5.0F,
+                width - 5.0F,
+                height - inset - 5.0F,
+                resize_grip);
+        }
 
         canvas->restore();
         present();
@@ -1182,8 +1236,8 @@ bool WinOverlay::create(HINSTANCE instance, std::string& error) {
         WS_POPUP,
         0,
         0,
-        kLogicalWidth,
-        kMinimumLogicalHeight,
+        kDefaultLogicalWidth,
+        kDefaultLogicalHeight,
         nullptr,
         nullptr,
         instance,
@@ -1197,11 +1251,11 @@ bool WinOverlay::create(HINSTANCE instance, std::string& error) {
         WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_LAYERED,
         kOverlayClass,
         L"DictScribe",
-        WS_POPUP,
+        WS_POPUP | WS_THICKFRAME,
         0,
         0,
-        kLogicalWidth,
-        kMinimumLogicalHeight,
+        kDefaultLogicalWidth,
+        kDefaultLogicalHeight,
         nullptr,
         nullptr,
         instance,
@@ -1244,12 +1298,16 @@ void WinOverlay::set_settings_handler(std::function<void()> handler) {
     impl_->settings_handler = std::move(handler);
 }
 
-void WinOverlay::set_position_handler(std::function<void(POINT)> handler) {
-    impl_->position_handler = std::move(handler);
+void WinOverlay::set_geometry_handler(std::function<void(POINT, SIZE)> handler) {
+    impl_->geometry_handler = std::move(handler);
 }
 
 void WinOverlay::set_preferred_position(std::optional<POINT> position) {
     impl_->preferred_position = position;
+}
+
+void WinOverlay::set_preferred_size(std::optional<SIZE> size) {
+    impl_->preferred_size = size;
 }
 
 void WinOverlay::update(const app::AppSnapshot& snapshot, std::string notice) {
@@ -1275,7 +1333,6 @@ void WinOverlay::update(const app::AppSnapshot& snapshot, std::string notice) {
         impl_->level_history.fill(0.0F);
     }
     if (visible()) {
-        impl_->resize_to_content();
         InvalidateRect(impl_->hwnd, nullptr, FALSE);
     }
 }
@@ -1284,14 +1341,17 @@ void WinOverlay::show_near(const TargetContext& target) {
     const POINT placement_anchor = impl_->preferred_position.value_or(target.anchor);
     HMONITOR monitor = MonitorFromPoint(placement_anchor, MONITOR_DEFAULTTONEAREST);
     impl_->dpi = EffectiveDpiForMonitor(monitor);
-    const int width = MulDiv(kLogicalWidth, static_cast<int>(impl_->dpi), 96);
-    const int height = MulDiv(
-        impl_->desired_logical_height(), static_cast<int>(impl_->dpi), 96);
+    const SIZE logical_size = impl_->preferred_size.value_or(
+        SIZE{kDefaultLogicalWidth, kDefaultLogicalHeight});
+    int width = MulDiv(logical_size.cx, static_cast<int>(impl_->dpi), 96);
+    int height = MulDiv(logical_size.cy, static_cast<int>(impl_->dpi), 96);
     const int gap = MulDiv(target.caret_anchor ? 12 : 20, static_cast<int>(impl_->dpi), 96);
 
     MONITORINFO info{};
     info.cbSize = sizeof(info);
     GetMonitorInfoW(monitor, &info);
+    width = std::min(width, static_cast<int>(info.rcWork.right - info.rcWork.left) - 16);
+    height = std::min(height, static_cast<int>(info.rcWork.bottom - info.rcWork.top) - 16);
     int x = 0;
     int y = 0;
     if (impl_->preferred_position) {
@@ -1310,7 +1370,9 @@ void WinOverlay::show_near(const TargetContext& target) {
     if (impl_->preferred_position &&
         (impl_->preferred_position->x != x || impl_->preferred_position->y != y)) {
         impl_->preferred_position = POINT{x, y};
-        if (impl_->position_handler) impl_->position_handler(*impl_->preferred_position);
+        if (impl_->geometry_handler) {
+            impl_->geometry_handler(*impl_->preferred_position, logical_size);
+        }
     }
 
     impl_->release_surface();

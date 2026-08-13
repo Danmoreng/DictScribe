@@ -106,8 +106,9 @@ public:
         overlay_.set_language_handler(
             [this](std::string language) { select_language(std::move(language)); });
         overlay_.set_settings_handler([this]() { show_settings(); });
-        overlay_.set_position_handler([this](POINT position) {
+        overlay_.set_geometry_handler([this](POINT position, SIZE size) {
             settings_.overlay_position = app::ScreenPosition{position.x, position.y};
+            settings_.overlay_size = app::ScreenSize{size.cx, size.cy};
             persist_settings();
         });
         if (settings_.overlay_position) {
@@ -125,6 +126,12 @@ public:
         if (!pipeline_debug_window_.create(instance, error)) {
             MessageBoxA(nullptr, error.c_str(), "DictScribe", MB_ICONERROR | MB_OK);
             return false;
+        }
+        if (settings_.overlay_size) {
+            overlay_.set_preferred_size(SIZE{
+                settings_.overlay_size->width,
+                settings_.overlay_size->height,
+            });
         }
 
         WNDCLASSEXW window_class{};

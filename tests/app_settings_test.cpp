@@ -28,6 +28,7 @@ int main() {
     expected.asr_device = dictscribe::app::ComputeDevice::Gpu;
     expected.rewrite_device = dictscribe::app::ComputeDevice::Cpu;
     expected.overlay_position = dictscribe::app::ScreenPosition{321, 654};
+    expected.overlay_size = dictscribe::app::ScreenSize{880, 440};
     std::string error;
     assert(dictscribe::app::SaveSettings(path, expected, error));
 
@@ -39,10 +40,13 @@ int main() {
     assert(loaded.overlay_position.has_value());
     assert(loaded.overlay_position->x == 321);
     assert(loaded.overlay_position->y == 654);
+    assert(loaded.overlay_size.has_value());
+    assert(loaded.overlay_size->width == 880);
+    assert(loaded.overlay_size->height == 440);
 
     {
         std::ofstream invalid(path, std::ios::binary | std::ios::trunc);
-        invalid << R"({"language":"unsupported","asrDevice":"other","rewriteDevice":4,"overlayPosition":{"x":"bad","y":2}})";
+        invalid << R"({"language":"unsupported","asrDevice":"other","rewriteDevice":4,"overlayPosition":{"x":"bad","y":2},"overlaySize":{"width":100,"height":99999}})";
     }
     const auto defaults = dictscribe::app::LoadSettings(path);
     assert(defaults.language == "auto");
@@ -50,6 +54,7 @@ int main() {
     assert(defaults.asr_device == dictscribe::app::ComputeDevice::Cpu);
     assert(defaults.rewrite_device == dictscribe::app::ComputeDevice::Cpu);
     assert(!defaults.overlay_position.has_value());
+    assert(!defaults.overlay_size.has_value());
 
     {
         std::ofstream legacy(path, std::ios::binary | std::ios::trunc);

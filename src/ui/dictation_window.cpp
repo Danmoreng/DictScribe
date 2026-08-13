@@ -548,7 +548,8 @@ void Render(
     const auto lines = WrapText(body, body_font, logical_width - 78.0F);
     const float body_bottom = logical_height - kFooterHeight - 16.0F;
     state.visible_line_count = std::max(
-        1, static_cast<int>(std::floor((body_bottom - kBodyTop) / kBodyLineHeight)));
+        1, 1 + static_cast<int>(
+            std::floor((body_bottom - kBodyTop) / kBodyLineHeight)));
     state.max_scroll_line = std::max(0, static_cast<int>(lines.size()) - state.visible_line_count);
     state.scroll_line = std::clamp(state.scroll_line, 0, state.max_scroll_line);
     if (state.snapshot.mode == app::DictationMode::Recording) {

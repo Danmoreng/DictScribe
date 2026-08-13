@@ -103,6 +103,23 @@ AppSettings LoadSettings(const std::filesystem::path& path) {
             }
         }
     }
+    const auto size = document.find("overlaySize");
+    if (size != document.end() && size->is_object()) {
+        const auto width = size->find("width");
+        const auto height = size->find("height");
+        if (width != size->end() && width->is_number_integer() &&
+            height != size->end() && height->is_number_integer()) {
+            try {
+                const ScreenSize value{width->get<int>(), height->get<int>()};
+                if (value.width >= 480 && value.width <= 2000 &&
+                    value.height >= 200 && value.height <= 1200) {
+                    settings.overlay_size = value;
+                }
+            } catch (const nlohmann::json::exception&) {
+                settings.overlay_size.reset();
+            }
+        }
+    }
     return settings;
 }
 
@@ -128,7 +145,7 @@ bool SaveSettings(
     }
 
     nlohmann::json document = {
-        {"version", 3},
+        {"version", 4},
         {"language", [&settings] {
             const std::string language = CanonicalLanguageCode(settings.language);
             return language.empty() ? std::string("auto") : language;
@@ -141,6 +158,12 @@ bool SaveSettings(
         document["overlayPosition"] = {
             {"x", settings.overlay_position->x},
             {"y", settings.overlay_position->y},
+        };
+    }
+    if (settings.overlay_size) {
+        document["overlaySize"] = {
+            {"width", settings.overlay_size->width},
+            {"height", settings.overlay_size->height},
         };
     }
 

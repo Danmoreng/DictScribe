@@ -20,12 +20,18 @@ struct ScreenPosition {
     int y = 0;
 };
 
+struct ScreenSize {
+    int width = 0;
+    int height = 0;
+};
+
 struct AppSettings {
     std::string language = "auto";
     CleanupMode cleanup_mode = CleanupMode::Off;
     ComputeDevice asr_device = ComputeDevice::Cpu;
     ComputeDevice rewrite_device = ComputeDevice::Cpu;
     std::optional<ScreenPosition> overlay_position;
+    std::optional<ScreenSize> overlay_size;
 };
 
 struct PendingDeviceSettings {

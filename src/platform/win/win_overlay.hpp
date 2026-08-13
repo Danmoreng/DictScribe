@@ -27,8 +27,9 @@ public:
     bool create(HINSTANCE instance, std::string& error);
     void set_language_handler(std::function<void(std::string)> handler);
     void set_settings_handler(std::function<void()> handler);
-    void set_position_handler(std::function<void(POINT)> handler);
+    void set_geometry_handler(std::function<void(POINT, SIZE)> handler);
     void set_preferred_position(std::optional<POINT> position);
+    void set_preferred_size(std::optional<SIZE> size);
     void update(const app::AppSnapshot& snapshot, std::string notice = {});
     void show_near(const TargetContext& target);
     void hide();
