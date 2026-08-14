@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ozeanwellen Audio-Visualisierung</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    body {
+      background-color: #030a16;
+      overflow: hidden;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      user-select: none;
+    }
+    canvas {
+      display: block;
+      width: 100vw;
+      height: 100vh;
+    }
+    #ui {
+      position: absolute;
+      top: 24px;
+      left: 24px;
+      z-index: 10;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .btn {
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      color: #e2f1f8;
+      padding: 12px 24px;
+      font-size: 14px;
+      font-weight: 500;
+      border-radius: 30px;
+      cursor: pointer;
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+    }
+    .btn:hover {
+      background: rgba(255, 255, 255, 0.18);
+      border-color: rgba(0, 180, 216, 0.6);
+      box-shadow: 0 0 20px rgba(0, 180, 216, 0.4);
+      transform: translateY(-1px);
+    }
+    .btn:active {
+      transform: translateY(1px);
+    }
+    .btn.active {
+      background: rgba(0, 180, 216, 0.2);
+      border-color: #00b4d8;
+      color: #90e0ef;
+    }
+    .status-indicator {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background-color: #ff4d4d;
+      box-shadow: 0 0 8px #ff4d4d;
+      transition: all 0.3s ease;
+    }
+    .btn.active .status-indicator {
+      background-color: #00f5d4;
+      box-shadow: 0 0 10px #00f5d4;
+    }
+    .info-badge {
+      background: rgba(3, 10, 22, 0.6);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      padding: 10px 16px;
+      border-radius: 12px;
+      color: #8ab4f8;
+      font-size: 12px;
+      backdrop-filter: blur(8px);
+      pointer-events: none;
+      max-width: 280px;
+      line-height: 1.4;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="ui">
+    <button id="audioBtn" class="btn">
+      <span class="status-indicator" id="statusDot"></span>
+      <span id="btnText">Audio-Eingabe aktivieren</span>
+    </button>
+    <div class="info-badge">
+      🌊 <strong>Ozeanwellen Visualizer</strong><br>
+      Bei Stille flacht das Wasser spiegelglatt ab.
+    </div>
+  </div>
+
+  <canvas id="canvas"></canvas>
+
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const audioBtn = document.getElementById('audioBtn');
+    const btnText = document.getElementById('btnText');
+
+    let width, height;
+    function resize() {
+      width = canvas.width = window.innerWidth;
+      height = canvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    // --- AUDIO SYSTEM ---
+    let audioCtx, analyser, dataArray;
+    let isAudioActive = false;
+    let lowFreq = 0, midFreq = 0, highFreq = 0;
+
+    async function initAudio() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 512;
+        
+        const source = audioCtx.createMediaStreamSource(stream);
+        source.connect(analyser);
+        
+        dataArray = new Uint8Array(analyser.frequencyBinCount);
+        isAudioActive = true;
+        
+        audioBtn.classList.add('active');
+        btnText.textContent = 'Audio aktiv (Mikrofon)';
+      } catch (err) {
+        btnText.textContent = 'Zugriff verweigert / Fehler';
+        console.error('Audio-Fehler:', err);
+      }
+    }
+
+    audioBtn.addEventListener('click', () => {
+      if (!isAudioActive) {
+        initAudio();
+      }
+    });
+
+    function updateAudioData() {
+      if (!isAudioActive) {
+        // Ohne Audio-Eingabe fällt der Pegel auf 0 (spiegelglattes Wasser)
+        lowFreq += (0 - lowFreq) * 0.08;
+        midFreq += (0 - midFreq) * 0.08;
+        highFreq += (0 - highFreq) * 0.08;
+        return;
+      }
+
+      analyser.getByteFrequencyData(dataArray);
+
+      // Frequenzbänder aufteilen
+      let bassSum = 0, midSum = 0, highSum = 0;
+      const binCount = dataArray.length;
+
+      const bassBins = Math.floor(binCount * 0.1);
+      const midBins = Math.floor(binCount * 0.4);
+
+      for (let i = 0; i < binCount; i++) {
+        if (i < bassBins) {
+          bassSum += dataArray[i];
+        } else if (i < bassBins + midBins) {
+          midSum += dataArray[i];
+        } else {
+          highSum += dataArray[i];
+        }
+      }
+
+      // Normalisierung (0.0 bis 1.0)
+      const targetLow = (bassSum / bassBins) / 255;
+      const targetMid = (midSum / midBins) / 255;
+      const targetHigh = (highSum / (binCount - bassBins - midBins)) / 255;
+
+      // Sanfter Schwellenwert (Rauschunterdrückung bei sehr leiser Umgebung)
+      const threshold = 0.02;
+      const finalLow = targetLow < threshold ? 0 : targetLow;
+      const finalMid = targetMid < threshold ? 0 : targetMid;
+      const finalHigh = targetHigh < threshold ? 0 : targetHigh;
+
+      // Geglättetes Abklingen & Ansteigen
+      lowFreq += (finalLow - lowFreq) * 0.12;
+      midFreq += (finalMid - midFreq) * 0.12;
+      highFreq += (finalHigh - highFreq) * 0.12;
+    }
+
+    // --- WELLEN SETUP ---
+    const waves = [
+      { color: 'rgba(4, 20, 45, 0.85)',   speed: 0.006, length: 0.003, maxAmp: 40, mult: 0.6 },
+      { color: 'rgba(8, 38, 75, 0.8)',    speed: 0.010, length: 0.005, maxAmp: 60, mult: 1.0 },
+      { color: 'rgba(12, 65, 115, 0.75)', speed: 0.014, length: 0.004, maxAmp: 85, mult: 1.4 },
+      { color: 'rgba(0, 119, 182, 0.65)', speed: 0.020, length: 0.007, maxAmp: 110, mult: 1.9 },
+      { color: 'rgba(72, 202, 228, 0.45)', speed: 0.026, length: 0.005, maxAmp: 135, mult: 2.5 }
+    ];
+
+    let step = 0;
+
+    // --- RENDER LOOP ---
+    function animate() {
+      requestAnimationFrame(animate);
+
+      updateAudioData();
+
+      // Hintergrund
+      ctx.fillStyle = '#030a16';
+      ctx.fillRect(0, 0, width, height);
+
+      // Fortschritt der Bewegung - Stoppt langsam, wenn keine Mitten vorhanden sind
+      step += 0.005 + (midFreq + lowFreq) * 0.04;
+
+      const baseY = height * 0.55;
+
+      // Wellenschichten zeichnen
+      waves.forEach((wave, index) => {
+        ctx.beginPath();
+        ctx.moveTo(0, height);
+
+        // Bei keinem Audio ist currentAmp nahe 0 -> spiegelglatte Oberfläche
+        const currentAmp = (lowFreq * 0.7 + midFreq * 0.3) * wave.maxAmp;
+
+        for (let x = 0; x <= width + 10; x += 6) {
+          // Harmonische Überlagerung zweier Sinuskurven
+          const wave1 = Math.sin(x * wave.length + step * wave.speed * 10);
+          const wave2 = Math.sin(x * wave.length * 2.2 + step * 1.4) * 0.35;
+          const wave3 = Math.cos(x * wave.length * 0.5 + step * 0.8) * 0.2;
+
+          const y = baseY 
+            + (wave1 + wave2 + wave3) * currentAmp
+            + (index * 18); // Vertikaler Schichtenversatz
+
+          ctx.lineTo(x, y);
+        }
+
+        ctx.lineTo(width, height);
+        ctx.closePath();
+
+        // Farbverlauf für reale Licht- und Tiefe
+        const gradient = ctx.createLinearGradient(0, baseY - wave.maxAmp, 0, height);
+        gradient.addColorStop(0, wave.color);
+        gradient.addColorStop(0.6, '#020d1f');
+        gradient.addColorStop(1, '#01050a');
+
+        ctx.fillStyle = gradient;
+        ctx.fill();
+
+        // Dezente Glanzkante an den Wellenkämmen
+        if (index >= 3 && currentAmp > 1) {
+          ctx.lineWidth = index === 4 ? 2 : 1;
+          const strokeAlpha = Math.min(0.5, (currentAmp / wave.maxAmp) * 0.6);
+          ctx.strokeStyle = `rgba(180, 240, 255, ${strokeAlpha})`;
+          ctx.stroke();
+        }
+      });
+    }
+
+    animate();
+  </script>
+</body>
+</html>

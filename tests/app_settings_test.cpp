@@ -27,6 +27,7 @@ int main() {
     expected.cleanup_mode = dictscribe::app::CleanupMode::Ai;
     expected.asr_device = dictscribe::app::ComputeDevice::Gpu;
     expected.rewrite_device = dictscribe::app::ComputeDevice::Cpu;
+    expected.overlay_appearance = dictscribe::app::OverlayAppearance::Solid;
     expected.overlay_position = dictscribe::app::ScreenPosition{321, 654};
     expected.overlay_size = dictscribe::app::ScreenSize{880, 440};
     std::string error;
@@ -37,6 +38,7 @@ int main() {
     assert(loaded.cleanup_mode == dictscribe::app::CleanupMode::Ai);
     assert(loaded.asr_device == dictscribe::app::ComputeDevice::Gpu);
     assert(loaded.rewrite_device == dictscribe::app::ComputeDevice::Cpu);
+    assert(loaded.overlay_appearance == dictscribe::app::OverlayAppearance::Solid);
     assert(loaded.overlay_position.has_value());
     assert(loaded.overlay_position->x == 321);
     assert(loaded.overlay_position->y == 654);
@@ -53,6 +55,7 @@ int main() {
     assert(defaults.cleanup_mode == dictscribe::app::CleanupMode::Off);
     assert(defaults.asr_device == dictscribe::app::ComputeDevice::Cpu);
     assert(defaults.rewrite_device == dictscribe::app::ComputeDevice::Cpu);
+    assert(defaults.overlay_appearance == dictscribe::app::OverlayAppearance::Glass);
     assert(!defaults.overlay_position.has_value());
     assert(!defaults.overlay_size.has_value());
 

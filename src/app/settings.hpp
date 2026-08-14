@@ -15,6 +15,11 @@ enum class ComputeDevice {
     Gpu,
 };
 
+enum class OverlayAppearance {
+    Glass,
+    Solid,
+};
+
 struct ScreenPosition {
     int x = 0;
     int y = 0;
@@ -30,6 +35,7 @@ struct AppSettings {
     CleanupMode cleanup_mode = CleanupMode::Off;
     ComputeDevice asr_device = ComputeDevice::Cpu;
     ComputeDevice rewrite_device = ComputeDevice::Cpu;
+    OverlayAppearance overlay_appearance = OverlayAppearance::Glass;
     std::optional<ScreenPosition> overlay_position;
     std::optional<ScreenSize> overlay_size;
 };
@@ -42,6 +48,7 @@ struct PendingDeviceSettings {
 [[nodiscard]] bool IsSupportedLanguage(const std::string& language);
 [[nodiscard]] CleanupMode ParseCleanupMode(const std::string& value);
 [[nodiscard]] const char* ComputeDeviceName(ComputeDevice device);
+[[nodiscard]] const char* OverlayAppearanceName(OverlayAppearance appearance);
 [[nodiscard]] std::filesystem::path DefaultSettingsPath();
 [[nodiscard]] AppSettings LoadSettings(const std::filesystem::path& path);
 [[nodiscard]] AppSettings LoadSettings();

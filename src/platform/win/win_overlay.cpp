@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <limits>
 #include <sstream>
@@ -18,13 +19,18 @@
 #pragma warning(push)
 #pragma warning(disable: 4244 4267)
 #include "include/core/SkCanvas.h"
+#include "include/core/SkColor.h"
 #include "include/core/SkFont.h"
 #include "include/core/SkFontMgr.h"
 #include "include/core/SkImageInfo.h"
 #include "include/core/SkPaint.h"
+#include "include/core/SkPath.h"
+#include "include/core/SkPathBuilder.h"
+#include "include/core/SkPoint.h"
 #include "include/core/SkRect.h"
 #include "include/core/SkRRect.h"
 #include "include/core/SkSurface.h"
+#include "include/effects/SkGradient.h"
 #include "include/ports/SkTypeface_win.h"
 #pragma warning(pop)
 
@@ -226,6 +232,121 @@ SkColor StatusColor(app::DictationMode mode) {
     return kAccent;
 }
 
+struct OceanWaveLayer {
+    SkColor color;
+    float speed;
+    float wavelength;
+    float maximum_amplitude;
+};
+
+constexpr std::array<OceanWaveLayer, 5> kOceanWaveLayers{{
+    {SkColorSetARGB(217,   4,  20,  45), 0.006F, 0.003F,  40.0F},
+    {SkColorSetARGB(204,   8,  38,  75), 0.010F, 0.005F,  60.0F},
+    {SkColorSetARGB(191,  12,  65, 115), 0.014F, 0.004F,  85.0F},
+    {SkColorSetARGB(166,   0, 119, 182), 0.020F, 0.007F, 110.0F},
+    {SkColorSetARGB(115,  72, 202, 228), 0.026F, 0.005F, 135.0F},
+}};
+
+void DrawOceanWaves(
+    SkCanvas& canvas,
+    float width,
+    float top,
+    float bottom,
+    bool glass,
+    float low_frequency_level,
+    float mid_frequency_level,
+    float phase) {
+    const float available_height = std::max(1.0F, bottom - top);
+    const float amplitude_scale = std::clamp(available_height / 215.0F, 0.86F, 1.60F);
+    const float mixed_audio = std::clamp(
+        low_frequency_level * 0.70F + mid_frequency_level * 0.30F, 0.0F, 1.0F);
+    // The browser mock-up spans a much wider canvas. Normalize x to that
+    // visual width so a compact overlay still contains several wave crests.
+    const float horizontal_scale = std::clamp(2200.0F / width, 1.0F, 4.0F);
+    // FFT bands in the browser produce a stronger useful signal than a single
+    // RMS/peak pair. Expand quieter speech without flattening loud passages.
+    const float audio_strength = std::clamp(
+        std::pow(mixed_audio, 0.72F) * 1.12F, 0.0F, 1.0F);
+    const float activity = std::clamp(audio_strength * 1.35F, 0.0F, 1.0F);
+    // Keep only a slim stack of colored surfaces at rest. As speech arrives,
+    // lift the ocean into the body and spread the layers to the HTML layout.
+    const float resting_base_y = bottom - 10.0F;
+    const float active_base_y = top + available_height * 0.55F;
+    const float base_y = resting_base_y + (active_base_y - resting_base_y) * activity;
+    const float layer_offset =
+        2.0F + (18.0F * amplitude_scale - 2.0F) * activity;
+    constexpr float kSampleStep = 6.0F;
+    constexpr std::array<float, 3> kGradientPositions{0.0F, 0.60F, 1.0F};
+
+    canvas.save();
+    canvas.clipRect(SkRect::MakeLTRB(0.0F, top, width, bottom), true);
+    for (std::size_t index = 0; index < kOceanWaveLayers.size(); ++index) {
+        const OceanWaveLayer& layer = kOceanWaveLayers[index];
+        const float maximum_amplitude = layer.maximum_amplitude * amplitude_scale;
+        const float current_amplitude = audio_strength * maximum_amplitude;
+        const float layer_base_y = base_y + static_cast<float>(index) * layer_offset;
+
+        SkPathBuilder crest_builder;
+        crest_builder.setIsVolatile(true);
+        SkPathBuilder area_builder;
+        area_builder.setIsVolatile(true);
+        bool first_point = true;
+        for (float x = -kSampleStep; x <= width + kSampleStep; x += kSampleStep) {
+            const float visual_x = x * horizontal_scale;
+            const float primary = std::sin(
+                visual_x * layer.wavelength + phase * layer.speed * 10.0F);
+            const float secondary = std::sin(
+                visual_x * layer.wavelength * 2.2F + phase * 1.4F) * 0.35F;
+            const float tertiary = std::cos(
+                visual_x * layer.wavelength * 0.5F + phase * 0.8F) * 0.20F;
+            const float y = layer_base_y +
+                (primary + secondary + tertiary) * current_amplitude;
+            if (first_point) {
+                crest_builder.moveTo(x, y);
+                area_builder.moveTo(x, y);
+                first_point = false;
+            } else {
+                crest_builder.lineTo(x, y);
+                area_builder.lineTo(x, y);
+            }
+        }
+
+        area_builder.lineTo(width + kSampleStep, bottom);
+        area_builder.lineTo(-kSampleStep, bottom);
+        area_builder.close();
+        const SkPath crest = crest_builder.detach();
+        const SkPath area = area_builder.detach();
+
+        const U8CPU middle_alpha = glass ? 190 : 255;
+        const U8CPU bottom_alpha = glass ? 226 : 255;
+        const std::array<SkColor4f, 3> gradient_colors{
+            SkColor4f::FromColor(layer.color),
+            SkColor4f::FromColor(SkColorSetARGB(middle_alpha, 2, 13, 31)),
+            SkColor4f::FromColor(SkColorSetARGB(bottom_alpha, 1, 5, 10)),
+        };
+        const SkPoint gradient_points[2]{
+            SkPoint::Make(0.0F, layer_base_y - maximum_amplitude),
+            SkPoint::Make(0.0F, bottom),
+        };
+        SkPaint fill = Fill(SK_ColorWHITE);
+        fill.setShader(SkShaders::LinearGradient(
+            gradient_points,
+            {{gradient_colors, kGradientPositions, SkTileMode::kClamp}, {}}));
+        canvas.drawPath(area, fill);
+
+        if (index >= 3 && current_amplitude > 1.0F) {
+            const U8CPU highlight_alpha = static_cast<U8CPU>(255.0F * std::min(
+                0.50F,
+                current_amplitude / maximum_amplitude * 0.60F));
+            SkPaint highlight = Fill(SkColorSetARGB(highlight_alpha, 180, 240, 255));
+            highlight.setStyle(SkPaint::kStroke_Style);
+            highlight.setStrokeWidth(index == kOceanWaveLayers.size() - 1 ? 2.0F : 1.0F);
+            canvas.drawPath(crest, highlight);
+        }
+    }
+    canvas.restore();
+}
+
 sk_sp<SkTypeface> FindTypeface(
     const sk_sp<SkFontMgr>& manager,
     SkFontStyle style) {
@@ -249,13 +370,18 @@ struct WinOverlay::Impl {
     sk_sp<SkTypeface> regular;
     sk_sp<SkTypeface> semibold;
     app::AppSnapshot snapshot;
+    app::OverlayAppearance appearance = app::OverlayAppearance::Glass;
     std::string notice;
     std::function<void(std::string)> language_handler;
     std::function<void()> settings_handler;
     std::function<void(POINT, SIZE)> geometry_handler;
     std::optional<POINT> preferred_position;
     std::optional<SIZE> preferred_size;
-    std::array<float, 16> level_history{};
+    float ocean_low_level = 0.0F;
+    float ocean_mid_level = 0.0F;
+    float ocean_phase = 0.0F;
+    std::chrono::steady_clock::time_point ocean_last_frame{};
+    float animation_refresh_rate = 60.0F;
     int scroll_line = 0;
     int max_scroll_line = 0;
     int visible_line_count = 1;
@@ -263,6 +389,8 @@ struct WinOverlay::Impl {
     bool dragging_scrollbar = false;
     bool language_pressed = false;
     bool settings_pressed = false;
+    bool moving_window = false;
+    bool presenting_animation = false;
     bool language_menu_open = false;
     int language_menu_scroll = 0;
     int pressed_language_option = -1;
@@ -284,7 +412,7 @@ struct WinOverlay::Impl {
     SkRect language_badge_rect(float width = static_cast<float>(kDefaultLogicalWidth)) const {
         const std::string language = LanguageBadgeText(snapshot);
         const float badge_width = language == "AUTO" ? 62.0F : 72.0F;
-        return SkRect::MakeXYWH(width - 150.0F - badge_width, 11.0F, badge_width, 30.0F);
+        return SkRect::MakeXYWH(width - 24.0F - badge_width, 11.0F, badge_width, 30.0F);
     }
 
     bool language_badge_contains(int client_x, int client_y) const {
@@ -446,6 +574,10 @@ struct WinOverlay::Impl {
 
     void sync_backdrop(bool show) {
         if (!hwnd || !backdrop_hwnd) return;
+        if (appearance != app::OverlayAppearance::Glass || moving_window) {
+            if (IsWindowVisible(backdrop_hwnd)) ShowWindow(backdrop_hwnd, SW_HIDE);
+            return;
+        }
         RECT rect{};
         if (!GetWindowRect(hwnd, &rect)) return;
         SetWindowPos(
@@ -456,6 +588,35 @@ struct WinOverlay::Impl {
             rect.right - rect.left,
             rect.bottom - rect.top,
             SWP_NOACTIVATE | (show ? SWP_SHOWWINDOW : 0));
+    }
+
+    void apply_appearance(app::OverlayAppearance value) {
+        appearance = value;
+        if (!hwnd) return;
+
+        LONG_PTR extended_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        if (appearance == app::OverlayAppearance::Glass) {
+            extended_style |= WS_EX_LAYERED;
+        } else {
+            extended_style &= ~static_cast<LONG_PTR>(WS_EX_LAYERED);
+        }
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, extended_style);
+
+        const int corner_preference = appearance == app::OverlayAppearance::Glass ? 1 : 2;
+        DwmSetWindowAttribute(
+            hwnd, 33, &corner_preference, sizeof(corner_preference));
+        SetWindowPos(
+            hwnd,
+            HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+
+        sync_backdrop(IsWindowVisible(hwnd) != FALSE);
+        InvalidateRect(hwnd, nullptr, FALSE);
+        if (IsWindowVisible(hwnd)) UpdateWindow(hwnd);
     }
 
     void release_surface() {
@@ -709,7 +870,20 @@ struct WinOverlay::Impl {
             self->settings_pressed = false;
             self->pressed_language_option = -1;
             return 0;
+        case WM_ENTERSIZEMOVE:
+            self->moving_window = false;
+            return 0;
+        case WM_MOVING:
+            if (!self->moving_window) {
+                self->moving_window = true;
+                self->sync_backdrop(false);
+            }
+            return DefWindowProcW(hwnd, message, w_param, l_param);
+        case WM_SIZING:
+            self->moving_window = false;
+            return DefWindowProcW(hwnd, message, w_param, l_param);
         case WM_EXITSIZEMOVE: {
+            self->moving_window = false;
             RECT rect{};
             if (GetWindowRect(hwnd, &rect)) {
                 self->preferred_position = POINT{rect.left, rect.top};
@@ -721,6 +895,9 @@ struct WinOverlay::Impl {
                     self->geometry_handler(*self->preferred_position, *self->preferred_size);
                 }
             }
+            self->sync_backdrop(IsWindowVisible(hwnd) != FALSE);
+            InvalidateRect(hwnd, nullptr, FALSE);
+            UpdateWindow(hwnd);
             return 0;
         }
         case WM_GETMINMAXINFO: {
@@ -848,7 +1025,27 @@ struct WinOverlay::Impl {
     void present() {
         if (!surface || !surface_dc) return;
         PAINTSTRUCT paint{};
-        BeginPaint(hwnd, &paint);
+        HDC target_dc = BeginPaint(hwnd, &paint);
+        RECT dirty = paint.rcPaint;
+        if (IsRectEmpty(&dirty)) {
+            dirty = RECT{0, 0, surface->width(), surface->height()};
+        }
+
+        if (appearance == app::OverlayAppearance::Solid) {
+            BitBlt(
+                target_dc,
+                dirty.left,
+                dirty.top,
+                dirty.right - dirty.left,
+                dirty.bottom - dirty.top,
+                surface_dc,
+                dirty.left,
+                dirty.top,
+                SRCCOPY);
+            EndPaint(hwnd, &paint);
+            if (presenting_animation) DwmFlush();
+            return;
+        }
 
         RECT window{};
         GetWindowRect(hwnd, &window);
@@ -868,6 +1065,7 @@ struct WinOverlay::Impl {
         update.hdcSrc = surface_dc;
         update.pptSrc = &source;
         update.pblend = &blend;
+        update.prcDirty = &dirty;
         update.dwFlags = ULW_ALPHA | ULW_EX_NORESIZE;
         if (!UpdateLayeredWindowIndirect(hwnd, &update)) {
             UpdateLayeredWindow(
@@ -883,6 +1081,7 @@ struct WinOverlay::Impl {
         }
         ReleaseDC(nullptr, screen_dc);
         EndPaint(hwnd, &paint);
+        if (presenting_animation) DwmFlush();
     }
 
     void render() {
@@ -894,7 +1093,10 @@ struct WinOverlay::Impl {
         }
         SkCanvas* canvas = surface->getCanvas();
         const float scale = static_cast<float>(dpi) / 96.0F;
-        canvas->clear(SK_ColorTRANSPARENT);
+        canvas->clear(
+            appearance == app::OverlayAppearance::Glass
+                ? SK_ColorTRANSPARENT
+                : SkColorSetRGB(14, 17, 23));
         canvas->save();
         canvas->scale(scale, scale);
 
@@ -914,6 +1116,17 @@ struct WinOverlay::Impl {
         const SkFont menu_font(regular, 12.5F);
 
         canvas->drawRect(SkRect::MakeWH(width, height), Fill(kBackground));
+        if (snapshot.mode == app::DictationMode::Recording) {
+            DrawOceanWaves(
+                canvas[0],
+                width,
+                kHeaderHeight + 4.0F,
+                height - kFooterHeight,
+                appearance == app::OverlayAppearance::Glass,
+                ocean_low_level,
+                ocean_mid_level,
+                ocean_phase);
+        }
         SkPaint border = Fill(kBorder);
         border.setStyle(SkPaint::kStroke_Style);
         border.setStrokeWidth(1.0F);
@@ -977,20 +1190,6 @@ struct WinOverlay::Impl {
             30.5F,
             hint_font,
             kMuted);
-
-        const float meter_start_x = width - 132.0F;
-        for (std::size_t index = 0; index < level_history.size(); ++index) {
-            const float level = snapshot.mode == app::DictationMode::Recording
-                ? level_history[index]
-                : 0.0F;
-            const float bar_height = 3.0F + level * 23.0F;
-            const float x = meter_start_x + static_cast<float>(index) * 6.6F;
-            canvas->drawRoundRect(
-                SkRect::MakeXYWH(x, 26.0F - bar_height * 0.5F, 3.0F, bar_height),
-                1.5F,
-                1.5F,
-                Fill(level > 0.08F ? status_color : kSubtle));
-        }
 
         canvas->drawLine(24.0F, kHeaderHeight - 1.0F, width - 24.0F, kHeaderHeight - 1.0F, border);
 
@@ -1310,6 +1509,10 @@ void WinOverlay::set_preferred_size(std::optional<SIZE> size) {
     impl_->preferred_size = size;
 }
 
+void WinOverlay::set_appearance(app::OverlayAppearance appearance) {
+    impl_->apply_appearance(appearance);
+}
+
 void WinOverlay::update(const app::AppSnapshot& snapshot, std::string notice) {
     const app::DictationMode previous_mode = impl_->snapshot.mode;
     impl_->snapshot = snapshot;
@@ -1321,18 +1524,13 @@ void WinOverlay::update(const app::AppSnapshot& snapshot, std::string notice) {
         impl_->scroll_line = 0;
         impl_->user_scrolled = false;
     }
-    if (snapshot.mode == app::DictationMode::Recording) {
-        std::move(
-            impl_->level_history.begin() + 1,
-            impl_->level_history.end(),
-            impl_->level_history.begin());
-        const float source = std::max(snapshot.audio_rms, snapshot.audio_peak * 0.35F);
-        const float decibels = 20.0F * std::log10(std::max(source, 0.00001F));
-        impl_->level_history.back() = std::clamp((decibels + 55.0F) / 43.0F, 0.0F, 1.0F);
-    } else {
-        impl_->level_history.fill(0.0F);
+    if (snapshot.mode != app::DictationMode::Recording) {
+        impl_->ocean_low_level = 0.0F;
+        impl_->ocean_mid_level = 0.0F;
+        impl_->ocean_phase = 0.0F;
+        impl_->ocean_last_frame = {};
     }
-    if (visible()) {
+    if (visible() && !impl_->moving_window) {
         InvalidateRect(impl_->hwnd, nullptr, FALSE);
     }
 }
@@ -1400,6 +1598,66 @@ bool WinOverlay::visible() const { return impl_->hwnd && IsWindowVisible(impl_->
 
 bool WinOverlay::language_menu_open() const {
     return impl_->language_menu_open;
+}
+
+void WinOverlay::set_animation_refresh_rate(float refresh_rate) {
+    impl_->animation_refresh_rate = std::clamp(refresh_rate, 30.0F, 500.0F);
+}
+
+void WinOverlay::animation_frame() {
+    if (!visible() || impl_->moving_window) return;
+    if (impl_->snapshot.mode == app::DictationMode::Recording) {
+        const auto now = std::chrono::steady_clock::now();
+        float frame_seconds = 1.0F / impl_->animation_refresh_rate;
+        if (impl_->ocean_last_frame.time_since_epoch().count() != 0) {
+            frame_seconds = std::chrono::duration<float>(
+                now - impl_->ocean_last_frame).count();
+        }
+        impl_->ocean_last_frame = now;
+        frame_seconds = std::clamp(frame_seconds, 1.0F / 500.0F, 0.05F);
+
+        const auto normalize_audio = [](float source) {
+            const float decibels = 20.0F * std::log10(std::max(source, 0.00001F));
+            const float normalized = std::clamp((decibels + 55.0F) / 43.0F, 0.0F, 1.0F);
+            const float shaped = std::pow(normalized, 1.05F);
+            return shaped < 0.14F ? 0.0F : shaped;
+        };
+        const float low_target = normalize_audio(impl_->snapshot.audio_rms);
+        const float mid_target = normalize_audio(impl_->snapshot.audio_peak * 0.35F);
+        // Reproduce the amount of movement/easing the HTML performs at 240 Hz,
+        // but advance it using elapsed time so dropped presentation frames do
+        // not slow the animation down.
+        const float html_frame_count = frame_seconds * 240.0F;
+        const auto smoothing_for = [html_frame_count](float current, float target) {
+            // Keep the immediate attack, but let the ocean settle rather than
+            // snapping flat between words.
+            const float per_html_frame = target >= current ? 0.12F : 0.025F;
+            return 1.0F - std::pow(1.0F - per_html_frame, html_frame_count);
+        };
+        impl_->ocean_low_level +=
+            (low_target - impl_->ocean_low_level) *
+                smoothing_for(impl_->ocean_low_level, low_target);
+        impl_->ocean_mid_level +=
+            (mid_target - impl_->ocean_mid_level) *
+                smoothing_for(impl_->ocean_mid_level, mid_target);
+        impl_->ocean_phase = std::fmod(
+            impl_->ocean_phase + html_frame_count *
+                (0.005F + (impl_->ocean_low_level + impl_->ocean_mid_level) * 0.04F),
+            628.318530717958647692F);
+    }
+    RECT client{};
+    GetClientRect(impl_->hwnd, &client);
+    RECT wave_region{
+        0,
+        MulDiv(static_cast<int>(kHeaderHeight), static_cast<int>(impl_->dpi), 96),
+        client.right,
+        client.bottom - MulDiv(
+            static_cast<int>(kFooterHeight), static_cast<int>(impl_->dpi), 96),
+    };
+    impl_->presenting_animation = true;
+    InvalidateRect(impl_->hwnd, &wave_region, FALSE);
+    UpdateWindow(impl_->hwnd);
+    impl_->presenting_animation = false;
 }
 
 } // namespace dictscribe::win

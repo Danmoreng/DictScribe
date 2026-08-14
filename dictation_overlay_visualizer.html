@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Diktier-UI mit Ozeanwellen Hintergrund</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap');
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background-color: #e5e5e0;
+      background-image: 
+        radial-gradient(at 0% 0%, rgba(255, 255, 255, 0.8) 0px, transparent 50%),
+        radial-gradient(at 100% 100%, rgba(210, 215, 220, 0.5) 0px, transparent 50%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0;
+      overflow: hidden;
+    }
+
+    /* Subtile Scrollbar für das Textfeld */
+    .custom-scrollbar::-webkit-scrollbar {
+      width: 5px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-track {
+      background: rgba(0, 0, 0, 0.03);
+      border-radius: 4px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-thumb {
+      background: rgba(0, 0, 0, 0.15);
+      border-radius: 4px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+      background: rgba(0, 0, 0, 0.25);
+    }
+
+    /* Pulsierende Balken für die Pegel-Anzeige */
+    .audio-bar {
+      transition: height 0.08s ease-in-out;
+    }
+
+    /* Pulse Effekt bei aktiver Aufnahme */
+    @keyframes pulse-ring {
+      0% { transform: scale(0.95); opacity: 0.8; }
+      50% { transform: scale(1.05); opacity: 0.4; }
+      100% { transform: scale(0.95); opacity: 0.8; }
+    }
+    .recording-pulse {
+      animation: pulse-ring 2s infinite ease-in-out;
+    }
+  </style>
+</head>
+<body class="p-4 sm:p-6 select-none">
+
+  <!-- MAIN DICTATION OVERLAY CONTAINER -->
+  <div class="relative w-full max-w-2xl bg-white/70 backdrop-blur-2xl rounded-2xl shadow-[0_20px_60px_-15px_rgba(0,0,0,0.15)] border border-white/80 overflow-hidden flex flex-direction-col flex-col">
+    
+    <!-- CANVAS HINTERGRUND FÜR DIE OZEANWELLEN -->
+    <canvas id="waveCanvas" class="absolute inset-0 w-full h-full pointer-events-none z-0 opacity-80 transition-opacity duration-700"></canvas>
+
+    <!-- HEADER / TOP BAR -->
+    <div class="relative z-10 flex items-center justify-between px-6 pt-5 pb-2">
+      <div class="flex items-center gap-2">
+        <button id="recordToggleBtn" class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-900/10 hover:bg-slate-900/15 border border-black/5 text-slate-800 text-xs font-medium transition-all cursor-pointer backdrop-blur-md active:scale-95">
+          <span id="recordDot" class="w-2 h-2 rounded-full bg-red-500"></span>
+          <span id="recordStatusText">Aufnahme starten</span>
+        </button>
+        <button id="simDictateBtn" class="px-2.5 py-1.5 rounded-full bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-700 text-xs font-medium transition-all cursor-pointer backdrop-blur-md border border-indigo-500/20">
+          ✨ Diktat Simulieren
+        </button>
+      </div>
+
+      <div class="flex items-center gap-3">
+        <!-- Sprachauswahl Badge -->
+        <span class="px-2.5 py-1 rounded-md bg-white/60 border border-black/5 text-slate-700 text-xs font-semibold shadow-sm tracking-wide">
+          DE
+        </span>
+
+        <!-- Audiopegel Wellenform-Icon -->
+        <div id="audioMeter" class="flex items-end gap-[2px] h-4 px-1">
+          <div class="audio-bar w-[3px] h-1.5 bg-sky-500/60 rounded-full"></div>
+          <div class="audio-bar w-[3px] h-3 bg-sky-500/60 rounded-full"></div>
+          <div class="audio-bar w-[3px] h-2 bg-sky-500/60 rounded-full"></div>
+          <div class="audio-bar w-[3px] h-4 bg-sky-500/60 rounded-full"></div>
+          <div class="audio-bar w-[3px] h-2.5 bg-sky-500/60 rounded-full"></div>
+          <div class="audio-bar w-[3px] h-1 bg-sky-500/60 rounded-full"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- MAIN DICTATED TEXT CONTENT AREA -->
+    <div class="relative z-10 px-6 py-4 min-h-[180px] max-h-[360px] flex flex-col justify-start">
+      <!-- Halbtransparenter Hintergrund für perfekte Lesbarkeit des Textes über den Wellen -->
+      <div id="textScrollContainer" class="overflow-y-auto max-h-[280px] custom-scrollbar pr-2">
+        <p id="dictatedText" class="text-slate-800 text-[17px] leading-relaxed font-normal transition-all duration-300">
+          Ich würde gern alles ein bisschen mischen, weil alle drei Richtungen gute Elemente haben.
+          <br><br>
+          Das Fenster soll mit dem Text mitwachsen, damit nicht nur der aktuelle Satz sichtbar ist, sondern auch ein paar weitere Sätze oder kurze Absätze. Gleichzeitig sollte es eine maximale Höhe geben, damit das Overlay nicht zu groß wird.
+          <br><br>
+          Wichtig sind außerdem die Sprachanzeige, der Audiopegel rechts und zwei Tastenkombinationen: eine zum Stoppen und Einfügen in Textfeld 1, und eine zum Abbrechen der Transkription.
+        </p>
+        <span id="cursor" class="inline-block w-0.5 h-5 bg-sky-600 animate-pulse ml-0.5 align-middle hidden"></span>
+      </div>
+    </div>
+
+    <!-- FOOTER / SHORTCUT TOOLBAR -->
+    <div class="relative z-10 border-t border-black/[0.06] bg-white/40 backdrop-blur-md px-6 py-3.5 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-600">
+      
+      <!-- Stoppen & Einfügen -->
+      <button id="insertActionBtn" class="flex items-center gap-2 hover:text-slate-900 transition-colors group cursor-pointer">
+        <span class="px-2 py-1 rounded-md bg-white/80 border border-black/10 text-slate-700 font-medium shadow-2xs group-hover:bg-white group-hover:shadow-xs transition-all">
+          ⌘ Enter
+        </span>
+        <span>Aufnahme stoppen & in Textfeld 1 einfügen</span>
+      </button>
+
+      <!-- Abbrechen -->
+      <button id="cancelActionBtn" class="flex items-center gap-2 hover:text-slate-900 transition-colors group cursor-pointer">
+        <span class="px-2 py-1 rounded-md bg-white/80 border border-black/10 text-slate-700 font-medium shadow-2xs group-hover:bg-white group-hover:shadow-xs transition-all">
+          Esc
+        </span>
+        <span>Transkription abbrechen</span>
+      </button>
+
+    </div>
+  </div>
+
+  <!-- MODAL NOTIFICATION TOAST -->
+  <div id="toast" class="fixed bottom-6 left-1/2 -translate-x-1/2 px-4 py-2.5 rounded-full bg-slate-900 text-white text-xs font-medium shadow-lg opacity-0 pointer-events-none transition-all duration-300 z-50 flex items-center gap-2">
+    <span id="toastMsg">Aktion ausgeführt</span>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('waveCanvas');
+    const ctx = canvas.getContext('2d');
+
+    let width, height;
+    function resizeCanvas() {
+      const rect = canvas.getBoundingClientRect();
+      width = canvas.width = rect.width;
+      height = canvas.height = rect.height;
+    }
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+
+    // --- AUDIO & FREQUENCY VARIABLES ---
+    let audioCtx, analyser, dataArray;
+    let isListening = false;
+    let lowFreq = 0, midFreq = 0;
+
+    // --- OZEANWELLEN KONFIGURATION ---
+    // Sanftere Farbtöne, abgestimmt auf das helle UI-Overlay
+    const waves = [
+      { color: 'rgba(186, 230, 253, 0.40)', speed: 0.005, length: 0.005, maxAmp: 25 },
+      { color: 'rgba(125, 211, 252, 0.35)', speed: 0.008, length: 0.007, maxAmp: 35 },
+      { color: 'rgba(56, 189, 248, 0.30)',  speed: 0.012, length: 0.004, maxAmp: 45 },
+      { color: 'rgba(14, 165, 233, 0.25)',  speed: 0.016, length: 0.006, maxAmp: 60 }
+    ];
+
+    let step = 0;
+
+    async function initAudio() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 256;
+        
+        const source = audioCtx.createMediaStreamSource(stream);
+        source.connect(analyser);
+        
+        dataArray = new Uint8Array(analyser.frequencyBinCount);
+        isListening = true;
+        updateRecordUI(true);
+        startSpeechRecognition();
+        showToast("🎙️ Mikrofon aktiv – Sprich jetzt!");
+      } catch (err) {
+        showToast("❌ Mikrofonzugriff nicht gewährt");
+        console.error(err);
+      }
+    }
+
+    function stopAudio() {
+      if (audioCtx) {
+        audioCtx.close();
+        audioCtx = null;
+      }
+      isListening = false;
+      if (recognition) recognition.stop();
+      updateRecordUI(false);
+      showToast("Aufnahme gestoppt");
+    }
+
+    function updateAudioData() {
+      if (!isListening || !analyser) {
+        // Bei Stille flachen die Frequenzen auf 0 ab -> spiegelglatte Wellen
+        lowFreq += (0 - lowFreq) * 0.08;
+        midFreq += (0 - midFreq) * 0.08;
+        updateAudioMeter([2, 5, 3, 6, 4, 2]);
+        return;
+      }
+
+      analyser.getByteFrequencyData(dataArray);
+
+      let bassSum = 0, midSum = 0;
+      const binCount = dataArray.length;
+      const bassBins = Math.floor(binCount * 0.2);
+
+      for (let i = 0; i < binCount; i++) {
+        if (i < bassBins) bassSum += dataArray[i];
+        else midSum += dataArray[i];
+      }
+
+      const targetLow = (bassSum / bassBins) / 255;
+      const targetMid = (midSum / (binCount - bassBins)) / 255;
+
+      // Noise Gate Schwellenwert
+      const threshold = 0.03;
+      const finalLow = targetLow < threshold ? 0 : targetLow;
+      const finalMid = targetMid < threshold ? 0 : targetMid;
+
+      lowFreq += (finalLow - lowFreq) * 0.15;
+      midFreq += (finalMid - midFreq) * 0.15;
+
+      // Pegelbalken oben rechts aktualisieren
+      const rawMeterValues = [
+        Math.max(2, finalLow * 16),
+        Math.max(4, finalMid * 20),
+        Math.max(2, finalLow * 18),
+        Math.max(5, finalMid * 22),
+        Math.max(3, finalLow * 14),
+        Math.max(2, finalMid * 10)
+      ];
+      updateAudioMeter(rawMeterValues);
+    }
+
+    function updateAudioMeter(heights) {
+      const bars = document.querySelectorAll('.audio-bar');
+      bars.forEach((bar, idx) => {
+        if (heights[idx] !== undefined) {
+          bar.style.height = `${heights[idx]}px`;
+        }
+      });
+    }
+
+    function animateWaves() {
+      requestAnimationFrame(animateWaves);
+
+      updateAudioData();
+
+      ctx.clearRect(0, 0, width, height);
+
+      step += 0.006 + (midFreq + lowFreq) * 0.03;
+
+      // Basishöhe der Wellen am unteren Rand des Fensters
+      const baseY = height * 0.72;
+
+      waves.forEach((wave, index) => {
+        ctx.beginPath();
+        ctx.moveTo(0, height);
+
+        // Amplitude bestimmt durch Lautstärke (Bass/Mitten)
+        const currentAmp = (lowFreq * 0.75 + midFreq * 0.25) * wave.maxAmp;
+
+        for (let x = 0; x <= width + 10; x += 5) {
+          const wave1 = Math.sin(x * wave.length + step * wave.speed * 10);
+          const wave2 = Math.sin(x * wave.length * 2.1 + step * 1.2) * 0.3;
+          const wave3 = Math.cos(x * wave.length * 0.6 + step * 0.7) * 0.2;
+
+          const y = baseY 
+            + (wave1 + wave2 + wave3) * currentAmp
+            + (index * 8);
+
+          ctx.lineTo(x, y);
+        }
+
+        ctx.lineTo(width, height);
+        ctx.closePath();
+
+        ctx.fillStyle = wave.color;
+        ctx.fill();
+
+        // Subtile Glanzlinie an den Wellenoberkanten
+        if (currentAmp > 0.5) {
+          ctx.lineWidth = 1;
+          const alpha = Math.min(0.4, currentAmp / wave.maxAmp);
+          ctx.strokeStyle = `rgba(255, 255, 255, ${alpha})`;
+          ctx.stroke();
+        }
+      });
+    }
+
+    animateWaves();
+
+    const recordBtn = document.getElementById('recordToggleBtn');
+    const recordDot = document.getElementById('recordDot');
+    const recordText = document.getElementById('recordStatusText');
+    const dictatedTextElem = document.getElementById('dictatedText');
+    const cursorElem = document.getElementById('cursor');
+
+    function updateRecordUI(active) {
+      if (active) {
+        recordDot.classList.remove('bg-red-500');
+        recordDot.classList.add('bg-emerald-500', 'recording-pulse');
+        recordText.textContent = "Aufnahme läuft...";
+        recordBtn.classList.add('bg-emerald-500/10', 'border-emerald-500/30', 'text-emerald-800');
+        cursorElem.classList.remove('hidden');
+      } else {
+        recordDot.classList.remove('bg-emerald-500', 'recording-pulse');
+        recordDot.classList.add('bg-red-500');
+        recordText.textContent = "Aufnahme starten";
+        recordBtn.classList.remove('bg-emerald-500/10', 'border-emerald-500/30', 'text-emerald-800');
+        cursorElem.classList.add('hidden');
+      }
+    }
+
+    recordBtn.addEventListener('click', () => {
+      if (!isListening) {
+        initAudio();
+      } else {
+        stopAudio();
+      }
+    });
+
+    // --- BROWSER SPEECH RECOGNITION INTEGRATION ---
+    let recognition;
+    function startSpeechRecognition() {
+      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SpeechRecognition) return;
+
+      recognition = new SpeechRecognition();
+      recognition.lang = 'de-DE';
+      recognition.continuous = true;
+      recognition.interimResults = true;
+
+      recognition.onresult = (event) => {
+        let transcript = '';
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          transcript += event.results[i][0].transcript;
+        }
+        if (transcript) {
+          appendDictatedText(" " + transcript);
+        }
+      };
+
+      recognition.start();
+    }
+
+    function appendDictatedText(text) {
+      dictatedTextElem.textContent += text;
+      // Automatisch nach unten scrollen
+      const container = document.getElementById('textScrollContainer');
+      container.scrollTop = container.scrollHeight;
+    }
+
+    // --- SIMULATIONS-MODUS ---
+    const simBtn = document.getElementById('simDictateBtn');
+    let isSimulating = false;
+    const simPhrases = [
+      " Die Wellen bewegen sich flüssig im Hintergrund des Diktierfeldes.",
+      " Wenn ich aufhöre zu sprechen, wird die Oberfläche wieder glatt.",
+      " Das eignet sich perfekt für ein modernes Overlay-Interface!"
+    ];
+
+    simBtn.addEventListener('click', () => {
+      if (isSimulating) return;
+      isSimulating = true;
+      cursorElem.classList.remove('hidden');
+
+      let phraseIdx = 0;
+      let charIdx = 0;
+      const currentPhrase = simPhrases[Math.floor(Math.random() * simPhrases.length)];
+
+      showToast("✨ Diktat wird simuliert...");
+
+      const interval = setInterval(() => {
+        if (charIdx < currentPhrase.length) {
+          dictatedTextElem.textContent += currentPhrase[charIdx];
+          charIdx++;
+          
+          // Künstliche Wellenausschläge simulieren
+          lowFreq = 0.4 + Math.sin(charIdx * 0.3) * 0.3;
+          midFreq = 0.3 + Math.cos(charIdx * 0.4) * 0.2;
+
+          const container = document.getElementById('textScrollContainer');
+          container.scrollTop = container.scrollHeight;
+        } else {
+          clearInterval(interval);
+          isSimulating = false;
+          cursorElem.classList.add('hidden');
+          lowFreq = 0;
+          midFreq = 0;
+        }
+      }, 45);
+    });
+
+    // --- ACTIONS & KEYBOARD SHORTCUTS ---
+    document.getElementById('insertActionBtn').addEventListener('click', () => {
+      showToast("📋 Text in Textfeld 1 eingefügt!");
+      stopAudio();
+    });
+
+    document.getElementById('cancelActionBtn').addEventListener('click', () => {
+      dictatedTextElem.textContent = "";
+      showToast("❌ Transkription abgebrochen & zurückgesetzt");
+      stopAudio();
+    });
+
+    // Shortcuts: Cmd+Enter & Esc
+    window.addEventListener('keydown', (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+        e.preventDefault();
+        document.getElementById('insertActionBtn').click();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        document.getElementById('cancelActionBtn').click();
+      }
+    });
+
+    // Toast Benachrichtigung
+    function showToast(msg) {
+      const toast = document.getElementById('toast');
+      const toastMsg = document.getElementById('toastMsg');
+      toastMsg.textContent = msg;
+      toast.classList.remove('opacity-0', 'pointer-events-none');
+      
+      setTimeout(() => {
+        toast.classList.add('opacity-0', 'pointer-events-none');
+      }, 2500);
+    }
+  </script>
+</body>
+</html>

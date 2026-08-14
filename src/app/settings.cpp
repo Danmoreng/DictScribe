@@ -40,12 +40,25 @@ bool IsSupportedLanguage(const std::string& language) {
     return IsSupportedLanguageCode(language);
 }
 
+OverlayAppearance ParseOverlayAppearance(const nlohmann::json& document) {
+    const auto value = document.find("overlayAppearance");
+    if (value != document.end() && value->is_string() &&
+        value->get<std::string>() == "solid") {
+        return OverlayAppearance::Solid;
+    }
+    return OverlayAppearance::Glass;
+}
+
 CleanupMode ParseCleanupMode(const std::string& value) {
     return value == "ai" ? CleanupMode::Ai : CleanupMode::Off;
 }
 
 const char* ComputeDeviceName(ComputeDevice device) {
     return device == ComputeDevice::Gpu ? "gpu" : "cpu";
+}
+
+const char* OverlayAppearanceName(OverlayAppearance appearance) {
+    return appearance == OverlayAppearance::Solid ? "solid" : "glass";
 }
 
 std::filesystem::path DefaultSettingsPath() {
@@ -89,6 +102,7 @@ AppSettings LoadSettings(const std::filesystem::path& path) {
     }
     settings.asr_device = ParseDevice(document, "asrDevice");
     settings.rewrite_device = ParseDevice(document, "rewriteDevice");
+    settings.overlay_appearance = ParseOverlayAppearance(document);
 
     const auto position = document.find("overlayPosition");
     if (position != document.end() && position->is_object()) {
@@ -145,7 +159,7 @@ bool SaveSettings(
     }
 
     nlohmann::json document = {
-        {"version", 4},
+        {"version", 5},
         {"language", [&settings] {
             const std::string language = CanonicalLanguageCode(settings.language);
             return language.empty() ? std::string("auto") : language;
@@ -153,6 +167,7 @@ bool SaveSettings(
         {"cleanupMode", CleanupModeName(settings.cleanup_mode)},
         {"asrDevice", ComputeDeviceName(settings.asr_device)},
         {"rewriteDevice", ComputeDeviceName(settings.rewrite_device)},
+        {"overlayAppearance", OverlayAppearanceName(settings.overlay_appearance)},
     };
     if (settings.overlay_position) {
         document["overlayPosition"] = {

@@ -19,6 +19,8 @@ enum class SettingsAction {
     ToggleLanguageMenu,
     CleanupOff,
     CleanupAi,
+    OverlayGlass,
+    OverlaySolid,
     AsrCpu,
     AsrGpu,
     RewriteCpu,
@@ -62,6 +64,8 @@ struct SettingsViewLayout {
     std::size_t language_option_count = 0;
     SkRect cleanup_off;
     SkRect cleanup_ai;
+    SkRect overlay_glass;
+    SkRect overlay_solid;
     SkRect asr_cpu;
     SkRect asr_gpu;
     SkRect rewrite_cpu;

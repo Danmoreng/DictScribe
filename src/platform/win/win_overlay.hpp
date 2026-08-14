@@ -7,6 +7,7 @@
 #include <windows.h>
 
 #include "app/app_controller.hpp"
+#include "app/settings.hpp"
 #include "platform/win/win_text_injector.hpp"
 
 #include <functional>
@@ -30,6 +31,9 @@ public:
     void set_geometry_handler(std::function<void(POINT, SIZE)> handler);
     void set_preferred_position(std::optional<POINT> position);
     void set_preferred_size(std::optional<SIZE> size);
+    void set_appearance(app::OverlayAppearance appearance);
+    void set_animation_refresh_rate(float refresh_rate);
+    void animation_frame();
     void update(const app::AppSnapshot& snapshot, std::string notice = {});
     void show_near(const TargetContext& target);
     void hide();

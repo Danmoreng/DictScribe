@@ -120,14 +120,33 @@ SettingsViewLayout RenderSettingsView(
     Text(canvas, model.language_menu_open ? "^" : "v", width - 55.0F, 153.5F, control_font, kMuted);
 
     Text(canvas, "TRANSCRIPT CLEANUP", 32.0F, 202.0F, section_font, kMuted);
+#ifdef _WIN32
+    layout.cleanup_off = SkRect::MakeXYWH(32.0F, 216.0F, 76.0F, 38.0F);
+    layout.cleanup_ai = SkRect::MakeXYWH(116.0F, 216.0F, 126.0F, 38.0F);
+#else
     layout.cleanup_off = SkRect::MakeXYWH(32.0F, 216.0F, 128.0F, 38.0F);
     layout.cleanup_ai = SkRect::MakeXYWH(168.0F, 216.0F, 168.0F, 38.0F);
+#endif
     SegmentedButton(
         canvas, layout.cleanup_off, "Off", model.settings.cleanup_mode == app::CleanupMode::Off,
         model.device_controls_enabled, control_font);
     SegmentedButton(
         canvas, layout.cleanup_ai, "AI cleanup", model.settings.cleanup_mode == app::CleanupMode::Ai,
         model.device_controls_enabled, control_font);
+
+#ifdef _WIN32
+    Text(canvas, "OVERLAY DESIGN", 330.0F, 202.0F, section_font, kMuted);
+    layout.overlay_glass = SkRect::MakeXYWH(330.0F, 216.0F, 112.0F, 38.0F);
+    layout.overlay_solid = SkRect::MakeXYWH(450.0F, 216.0F, 112.0F, 38.0F);
+    SegmentedButton(
+        canvas, layout.overlay_glass, "Glass",
+        model.settings.overlay_appearance == app::OverlayAppearance::Glass,
+        true, control_font);
+    SegmentedButton(
+        canvas, layout.overlay_solid, "Solid",
+        model.settings.overlay_appearance == app::OverlayAppearance::Solid,
+        true, control_font);
+#endif
 
     Text(canvas, "COMPUTE DEVICE", 32.0F, 296.0F, section_font, kMuted);
     Text(canvas, "Speech recognition", 32.0F, 328.0F, section_font, kText);
@@ -235,6 +254,8 @@ SettingsAction HitTestSettingsView(
     if (layout.language_select.contains(x, y)) return SettingsAction::ToggleLanguageMenu;
     if (layout.cleanup_off.contains(x, y)) return SettingsAction::CleanupOff;
     if (layout.cleanup_ai.contains(x, y)) return SettingsAction::CleanupAi;
+    if (layout.overlay_glass.contains(x, y)) return SettingsAction::OverlayGlass;
+    if (layout.overlay_solid.contains(x, y)) return SettingsAction::OverlaySolid;
     if (!device_controls_enabled) return SettingsAction::NoAction;
     if (layout.asr_cpu.contains(x, y)) return SettingsAction::AsrCpu;
     if (layout.asr_gpu.contains(x, y)) return SettingsAction::AsrGpu;
