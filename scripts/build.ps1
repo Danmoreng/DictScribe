@@ -78,7 +78,12 @@ if ($SkipUi) {
             "simple-markdown-viewer\third_party\skia"
     }
     if ([string]::IsNullOrWhiteSpace($SkiaOutDir)) {
-        $SkiaOutDir = Join-Path $SkiaDir "out\Static"
+        $direct3DOutput = Join-Path $SkiaDir "out\Direct3D"
+        $SkiaOutDir = if (Test-Path (Join-Path $direct3DOutput "skia.lib")) {
+            $direct3DOutput
+        } else {
+            Join-Path $SkiaDir "out\Static"
+        }
     }
     if (-not (Test-Path (Join-Path $SkiaDir "include\core\SkCanvas.h")) -or
         -not (Test-Path (Join-Path $SkiaOutDir "skia.lib"))) {
@@ -87,6 +92,11 @@ if ($SkipUi) {
     $coreArgs += "-DDICTSCRIBE_BUILD_UI=ON"
     $coreArgs += "-DSKIA_DIR=$SkiaDir"
     $coreArgs += "-DSKIA_OUT_DIR=$SkiaOutDir"
+    $skiaArgs = Join-Path $SkiaOutDir "args.gn"
+    $direct3DEnabled = Test-Path $skiaArgs -and
+        (Select-String -Path $skiaArgs -Pattern '^skia_use_direct3d\s*=\s*true\s*$' -Quiet)
+    $direct3DCMakeValue = if ($direct3DEnabled) { "ON" } else { "OFF" }
+    $coreArgs += "-DDICTSCRIBE_SKIA_DIRECT3D=$direct3DCMakeValue"
 }
 
 cmake -S $ProjectRoot -B (Join-Path $BuildRoot "core") @generator `

@@ -7,6 +7,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 option(DICTSCRIBE_BUILD_UI "Build the Skia desktop UI" OFF)
+option(DICTSCRIBE_SKIA_DIRECT3D "Use the Skia Ganesh Direct3D renderer on Windows" OFF)
 
 enable_testing()
 
@@ -132,6 +133,16 @@ if(DICTSCRIBE_BUILD_UI)
         if(NOT EXISTS "${SKIA_OUT_DIR}/skia.lib")
             message(FATAL_ERROR "SKIA_OUT_DIR does not contain skia.lib")
         endif()
+        if(DICTSCRIBE_SKIA_DIRECT3D)
+            if(NOT EXISTS "${SKIA_OUT_DIR}/args.gn")
+                message(FATAL_ERROR "The Direct3D Skia output must contain args.gn")
+            endif()
+            file(READ "${SKIA_OUT_DIR}/args.gn" SKIA_BUILD_ARGUMENTS)
+            if(NOT SKIA_BUILD_ARGUMENTS MATCHES "skia_use_direct3d[ \t]*=[ \t]*true")
+                message(FATAL_ERROR
+                    "DICTSCRIBE_SKIA_DIRECT3D requires a Skia build with skia_use_direct3d=true")
+            endif()
+        endif()
         add_executable(dictscribe WIN32
             src/platform/win/dictscribe.rc
             src/platform/win/win_main.cpp
@@ -148,6 +159,11 @@ if(DICTSCRIBE_BUILD_UI)
             src/app/settings.cpp
             src/app/worker_process.cpp
         )
+        if(DICTSCRIBE_SKIA_DIRECT3D)
+            target_sources(dictscribe PRIVATE
+                src/platform/win/win_d3d_renderer.cpp
+            )
+        endif()
     elseif(UNIX AND NOT APPLE)
         if(NOT EXISTS "${SKIA_OUT_DIR}/libskia.a")
             message(FATAL_ERROR "SKIA_OUT_DIR does not contain libskia.a")
@@ -212,6 +228,9 @@ if(DICTSCRIBE_BUILD_UI)
 
     if(WIN32)
         target_compile_definitions(dictscribe PRIVATE UNICODE _UNICODE)
+        if(DICTSCRIBE_SKIA_DIRECT3D)
+            target_compile_definitions(dictscribe PRIVATE DICTSCRIBE_SKIA_DIRECT3D=1)
+        endif()
         if(MSVC)
             target_compile_options(dictscribe PRIVATE /utf-8)
             set_property(TARGET dictscribe PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded")
@@ -228,6 +247,14 @@ if(DICTSCRIBE_BUILD_UI)
             dwmapi.lib
             shcore.lib
         )
+        if(DICTSCRIBE_SKIA_DIRECT3D)
+            target_link_libraries(dictscribe PRIVATE
+                d3d12.lib
+                d3dcompiler.lib
+                dxgi.lib
+                dcomp.lib
+            )
+        endif()
     else()
         target_link_libraries(dictscribe PRIVATE
             glfw

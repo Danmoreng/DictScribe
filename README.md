@@ -91,6 +91,20 @@ the workers and protocol tests are needed:
 .\scripts\build.ps1 -SkipUi
 ```
 
+For the GPU-composited Windows overlay, build the neighboring Skia checkout
+with its Ganesh Direct3D 12 backend once, then run the normal build:
+
+```powershell
+.\scripts\build-skia-direct3d.ps1
+.\scripts\build.ps1
+```
+
+When `out\Direct3D\skia.lib` is available, `build.ps1` selects it ahead of the
+raster-only `out\Static` build. The overlay renders into a transparent DXGI
+composition swap chain and presents it through DirectComposition. If Direct3D
+initialization or presentation fails at runtime, DictScribe automatically
+falls back to its raster Skia renderer.
+
 The default Linux build includes the Skia test UI. It uses the checkout named
 by `DICTSCRIBE_SKIA_DIR` when that environment variable is set; otherwise it
 reuses the Skia checkout from the neighboring `simple-markdown-viewer`

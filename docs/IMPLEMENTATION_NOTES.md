@@ -109,6 +109,14 @@ otherwise reuses the checkout in the neighboring `simple-markdown-viewer`
 repository. Only its thin platform and Skia surface approach is reused; its
 document system is not part of DictScribe.
 
+On Windows, the production overlay prefers a Skia Ganesh Direct3D 12 context.
+Its premultiplied-alpha DXGI swap chain is attached to the top-level overlay by
+DirectComposition, avoiding the raster DIB and `UpdateLayeredWindow` copy on
+every animation frame. The existing acrylic backdrop remains a separate native
+window behind that transparent composition surface. The raster surface and
+presentation path remain compiled as a runtime fallback for unsupported or
+lost Direct3D devices.
+
 ## Validation
 
 The Linux CPU build was validated with GCC 16.1.1 and CMake against:

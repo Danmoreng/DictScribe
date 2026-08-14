@@ -2,6 +2,9 @@
 
 #include "app/language_catalog.hpp"
 #include "ui/text_layout.hpp"
+#if defined(DICTSCRIBE_SKIA_DIRECT3D)
+#include "platform/win/win_d3d_renderer.hpp"
+#endif
 
 #include <algorithm>
 #include <array>
@@ -18,11 +21,13 @@
 
 #pragma warning(push)
 #pragma warning(disable: 4244 4267)
+#include "include/core/SkBlurTypes.h"
 #include "include/core/SkCanvas.h"
 #include "include/core/SkColor.h"
 #include "include/core/SkFont.h"
 #include "include/core/SkFontMgr.h"
 #include "include/core/SkImageInfo.h"
+#include "include/core/SkMaskFilter.h"
 #include "include/core/SkPaint.h"
 #include "include/core/SkPath.h"
 #include "include/core/SkPathBuilder.h"
@@ -275,6 +280,7 @@ void DrawOceanWaves(
     const float base_y = resting_base_y + (active_base_y - resting_base_y) * activity;
     const float layer_offset =
         2.0F + (18.0F * amplitude_scale - 2.0F) * activity;
+    const float wave_ceiling = top + available_height * 0.50F;
     constexpr float kSampleStep = 6.0F;
     constexpr std::array<float, 3> kGradientPositions{0.0F, 0.60F, 1.0F};
 
@@ -283,8 +289,15 @@ void DrawOceanWaves(
     for (std::size_t index = 0; index < kOceanWaveLayers.size(); ++index) {
         const OceanWaveLayer& layer = kOceanWaveLayers[index];
         const float maximum_amplitude = layer.maximum_amplitude * amplitude_scale;
-        const float current_amplitude = audio_strength * maximum_amplitude;
         const float layer_base_y = base_y + static_cast<float>(index) * layer_offset;
+        // The three harmonics can add up to 1.55. Limit the amplitude before
+        // drawing so crests remain below the middle of the text area without
+        // acquiring a visibly clipped, flat top.
+        const float ceiling_limited_amplitude = std::max(
+            0.0F, (layer_base_y - wave_ceiling) / 1.55F);
+        const float current_amplitude = std::min(
+            audio_strength * maximum_amplitude,
+            ceiling_limited_amplitude);
 
         SkPathBuilder crest_builder;
         crest_builder.setIsVolatile(true);
@@ -332,6 +345,10 @@ void DrawOceanWaves(
         fill.setShader(SkShaders::LinearGradient(
             gradient_points,
             {{gradient_colors, kGradientPositions, SkTileMode::kClamp}, {}}));
+        if (glass) {
+            fill.setMaskFilter(SkMaskFilter::MakeBlur(
+                kNormal_SkBlurStyle, 7.0F, true));
+        }
         canvas.drawPath(area, fill);
 
         if (index >= 3 && current_amplitude > 1.0F) {
@@ -341,6 +358,10 @@ void DrawOceanWaves(
             SkPaint highlight = Fill(SkColorSetARGB(highlight_alpha, 180, 240, 255));
             highlight.setStyle(SkPaint::kStroke_Style);
             highlight.setStrokeWidth(index == kOceanWaveLayers.size() - 1 ? 2.0F : 1.0F);
+            if (glass) {
+                highlight.setMaskFilter(SkMaskFilter::MakeBlur(
+                    kNormal_SkBlurStyle, 3.5F, true));
+            }
             canvas.drawPath(crest, highlight);
         }
     }
@@ -366,6 +387,9 @@ struct WinOverlay::Impl {
     HDC surface_dc = nullptr;
     HBITMAP surface_bitmap = nullptr;
     HGDIOBJ previous_surface_bitmap = nullptr;
+#if defined(DICTSCRIBE_SKIA_DIRECT3D)
+    std::unique_ptr<WinD3DRenderer> gpu_renderer;
+#endif
     sk_sp<SkFontMgr> font_manager;
     sk_sp<SkTypeface> regular;
     sk_sp<SkTypeface> semibold;
@@ -574,7 +598,7 @@ struct WinOverlay::Impl {
 
     void sync_backdrop(bool show) {
         if (!hwnd || !backdrop_hwnd) return;
-        if (appearance != app::OverlayAppearance::Glass || moving_window) {
+        if (appearance != app::OverlayAppearance::Glass) {
             if (IsWindowVisible(backdrop_hwnd)) ShowWindow(backdrop_hwnd, SW_HIDE);
             return;
         }
@@ -595,9 +619,17 @@ struct WinOverlay::Impl {
         if (!hwnd) return;
 
         LONG_PTR extended_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+#if defined(DICTSCRIBE_SKIA_DIRECT3D)
+        if (gpu_renderer && gpu_renderer->valid()) {
+            extended_style &= ~static_cast<LONG_PTR>(WS_EX_LAYERED);
+            extended_style |= WS_EX_NOREDIRECTIONBITMAP;
+        } else
+#endif
         if (appearance == app::OverlayAppearance::Glass) {
+            extended_style &= ~static_cast<LONG_PTR>(WS_EX_NOREDIRECTIONBITMAP);
             extended_style |= WS_EX_LAYERED;
         } else {
+            extended_style &= ~static_cast<LONG_PTR>(WS_EX_NOREDIRECTIONBITMAP);
             extended_style &= ~static_cast<LONG_PTR>(WS_EX_LAYERED);
         }
         SetWindowLongPtrW(hwnd, GWL_EXSTYLE, extended_style);
@@ -630,6 +662,31 @@ struct WinOverlay::Impl {
         surface_bitmap = nullptr;
         previous_surface_bitmap = nullptr;
     }
+
+#if defined(DICTSCRIBE_SKIA_DIRECT3D)
+    void fall_back_to_raster() {
+        if (!gpu_renderer) return;
+        gpu_renderer->shutdown();
+        gpu_renderer.reset();
+        LONG_PTR extended_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        extended_style &= ~static_cast<LONG_PTR>(WS_EX_NOREDIRECTIONBITMAP);
+        if (appearance == app::OverlayAppearance::Glass) {
+            extended_style |= WS_EX_LAYERED;
+        } else {
+            extended_style &= ~static_cast<LONG_PTR>(WS_EX_LAYERED);
+        }
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, extended_style);
+        SetWindowPos(
+            hwnd,
+            HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+        sync_backdrop(IsWindowVisible(hwnd) != FALSE);
+    }
+#endif
 
     void scroll_by(int lines) {
         scroll_line = std::clamp(scroll_line + lines, 0, max_scroll_line);
@@ -876,7 +933,6 @@ struct WinOverlay::Impl {
         case WM_MOVING:
             if (!self->moving_window) {
                 self->moving_window = true;
-                self->sync_backdrop(false);
             }
             return DefWindowProcW(hwnd, message, w_param, l_param);
         case WM_SIZING:
@@ -969,6 +1025,12 @@ struct WinOverlay::Impl {
             else if (self->backdrop_hwnd) ShowWindow(self->backdrop_hwnd, SW_HIDE);
             return DefWindowProcW(hwnd, message, w_param, l_param);
         case WM_DESTROY:
+#if defined(DICTSCRIBE_SKIA_DIRECT3D)
+            if (self->gpu_renderer) {
+                self->gpu_renderer->shutdown();
+                self->gpu_renderer.reset();
+            }
+#endif
             self->release_surface();
             return 0;
         default:
@@ -977,13 +1039,25 @@ struct WinOverlay::Impl {
         return DefWindowProcW(hwnd, message, w_param, l_param);
     }
 
-    bool ensure_surface() {
+    SkSurface* ensure_surface() {
         RECT rect{};
         GetClientRect(hwnd, &rect);
         const int width = rect.right - rect.left;
         const int height = rect.bottom - rect.top;
-        if (width <= 0 || height <= 0) return false;
-        if (surface && surface->width() == width && surface->height() == height) return true;
+        if (width <= 0 || height <= 0) return nullptr;
+#if defined(DICTSCRIBE_SKIA_DIRECT3D)
+        if (gpu_renderer && gpu_renderer->valid()) {
+            if (SkSurface* gpu_surface = gpu_renderer->begin_frame(width, height)) {
+                return gpu_surface;
+            }
+            OutputDebugStringA(
+                "DictScribe: Direct3D frame acquisition failed; using raster fallback.\n");
+            fall_back_to_raster();
+        }
+#endif
+        if (surface && surface->width() == width && surface->height() == height) {
+            return surface.get();
+        }
         release_surface();
 
         BITMAPINFO bitmap{};
@@ -1007,7 +1081,7 @@ struct WinOverlay::Impl {
         ReleaseDC(nullptr, screen_dc);
         if (!surface_dc || !surface_bitmap || !pixels) {
             release_surface();
-            return false;
+            return nullptr;
         }
 
         previous_surface_bitmap = SelectObject(surface_dc, surface_bitmap);
@@ -1017,12 +1091,26 @@ struct WinOverlay::Impl {
             static_cast<std::size_t>(width) * 4U);
         if (!surface) {
             release_surface();
-            return false;
+            return nullptr;
         }
-        return true;
+        return surface.get();
     }
 
     void present() {
+#if defined(DICTSCRIBE_SKIA_DIRECT3D)
+        if (gpu_renderer && gpu_renderer->valid()) {
+            PAINTSTRUCT paint{};
+            BeginPaint(hwnd, &paint);
+            EndPaint(hwnd, &paint);
+            if (!gpu_renderer->present()) {
+                OutputDebugStringA(
+                    "DictScribe: Direct3D presentation failed; using raster fallback.\n");
+                fall_back_to_raster();
+                InvalidateRect(hwnd, nullptr, FALSE);
+            }
+            return;
+        }
+#endif
         if (!surface || !surface_dc) return;
         PAINTSTRUCT paint{};
         HDC target_dc = BeginPaint(hwnd, &paint);
@@ -1085,13 +1173,14 @@ struct WinOverlay::Impl {
     }
 
     void render() {
-        if (!ensure_surface()) {
+        SkSurface* frame_surface = ensure_surface();
+        if (!frame_surface) {
             PAINTSTRUCT paint{};
             BeginPaint(hwnd, &paint);
             EndPaint(hwnd, &paint);
             return;
         }
-        SkCanvas* canvas = surface->getCanvas();
+        SkCanvas* canvas = frame_surface->getCanvas();
         const float scale = static_cast<float>(dpi) / 96.0F;
         canvas->clear(
             appearance == app::OverlayAppearance::Glass
@@ -1100,8 +1189,8 @@ struct WinOverlay::Impl {
         canvas->save();
         canvas->scale(scale, scale);
 
-        const float width = static_cast<float>(surface->width()) / scale;
-        const float height = static_cast<float>(surface->height()) / scale;
+        const float width = static_cast<float>(frame_surface->width()) / scale;
+        const float height = static_cast<float>(frame_surface->height()) / scale;
         canvas->clipRRect(
             SkRRect::MakeRectXY(
                 SkRect::MakeWH(width, height),
@@ -1446,8 +1535,15 @@ bool WinOverlay::create(HINSTANCE instance, std::string& error) {
         return false;
     }
 
+    DWORD overlay_extended_style =
+        WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE;
+#if defined(DICTSCRIBE_SKIA_DIRECT3D)
+    overlay_extended_style |= WS_EX_NOREDIRECTIONBITMAP;
+#else
+    overlay_extended_style |= WS_EX_LAYERED;
+#endif
     impl_->hwnd = CreateWindowExW(
-        WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_LAYERED,
+        overlay_extended_style,
         kOverlayClass,
         L"DictScribe",
         WS_POPUP | WS_THICKFRAME,
@@ -1486,6 +1582,24 @@ bool WinOverlay::create(HINSTANCE instance, std::string& error) {
         error = "Could not initialize the Windows UI font.";
         return false;
     }
+#if defined(DICTSCRIBE_SKIA_DIRECT3D)
+    RECT client{};
+    GetClientRect(impl_->hwnd, &client);
+    impl_->gpu_renderer = std::make_unique<WinD3DRenderer>();
+    std::string gpu_error;
+    if (!impl_->gpu_renderer->initialize(
+            impl_->hwnd,
+            client.right - client.left,
+            client.bottom - client.top,
+            gpu_error)) {
+        const std::string diagnostic =
+            "DictScribe: Direct3D initialization failed; using raster fallback: " +
+            gpu_error + "\n";
+        OutputDebugStringA(diagnostic.c_str());
+        impl_->fall_back_to_raster();
+    }
+#endif
+    impl_->apply_appearance(impl_->appearance);
     return true;
 }
 
@@ -1605,7 +1719,7 @@ void WinOverlay::set_animation_refresh_rate(float refresh_rate) {
 }
 
 void WinOverlay::animation_frame() {
-    if (!visible() || impl_->moving_window) return;
+    if (!visible()) return;
     if (impl_->snapshot.mode == app::DictationMode::Recording) {
         const auto now = std::chrono::steady_clock::now();
         float frame_seconds = 1.0F / impl_->animation_refresh_rate;
@@ -1631,7 +1745,7 @@ void WinOverlay::animation_frame() {
         const auto smoothing_for = [html_frame_count](float current, float target) {
             // Keep the immediate attack, but let the ocean settle rather than
             // snapping flat between words.
-            const float per_html_frame = target >= current ? 0.12F : 0.025F;
+            const float per_html_frame = target >= current ? 0.065F : 0.012F;
             return 1.0F - std::pow(1.0F - per_html_frame, html_frame_count);
         };
         impl_->ocean_low_level +=
@@ -1641,7 +1755,7 @@ void WinOverlay::animation_frame() {
             (mid_target - impl_->ocean_mid_level) *
                 smoothing_for(impl_->ocean_mid_level, mid_target);
         impl_->ocean_phase = std::fmod(
-            impl_->ocean_phase + html_frame_count *
+            impl_->ocean_phase + html_frame_count * 0.55F *
                 (0.005F + (impl_->ocean_low_level + impl_->ocean_mid_level) * 0.04F),
             628.318530717958647692F);
     }
