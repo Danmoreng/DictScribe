@@ -21,6 +21,8 @@ enum class SettingsAction {
     CleanupAi,
     OverlayGlass,
     OverlaySolid,
+    ThemeDark,
+    ThemeLight,
     AsrCpu,
     AsrGpu,
     RewriteCpu,
@@ -66,6 +68,8 @@ struct SettingsViewLayout {
     SkRect cleanup_ai;
     SkRect overlay_glass;
     SkRect overlay_solid;
+    SkRect theme_dark;
+    SkRect theme_light;
     SkRect asr_cpu;
     SkRect asr_gpu;
     SkRect rewrite_cpu;

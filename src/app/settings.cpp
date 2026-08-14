@@ -49,6 +49,15 @@ OverlayAppearance ParseOverlayAppearance(const nlohmann::json& document) {
     return OverlayAppearance::Glass;
 }
 
+ColorTheme ParseColorTheme(const nlohmann::json& document) {
+    const auto value = document.find("colorTheme");
+    if (value != document.end() && value->is_string() &&
+        value->get<std::string>() == "light") {
+        return ColorTheme::Light;
+    }
+    return ColorTheme::Dark;
+}
+
 CleanupMode ParseCleanupMode(const std::string& value) {
     return value == "ai" ? CleanupMode::Ai : CleanupMode::Off;
 }
@@ -59,6 +68,10 @@ const char* ComputeDeviceName(ComputeDevice device) {
 
 const char* OverlayAppearanceName(OverlayAppearance appearance) {
     return appearance == OverlayAppearance::Solid ? "solid" : "glass";
+}
+
+const char* ColorThemeName(ColorTheme theme) {
+    return theme == ColorTheme::Light ? "light" : "dark";
 }
 
 std::filesystem::path DefaultSettingsPath() {
@@ -103,6 +116,7 @@ AppSettings LoadSettings(const std::filesystem::path& path) {
     settings.asr_device = ParseDevice(document, "asrDevice");
     settings.rewrite_device = ParseDevice(document, "rewriteDevice");
     settings.overlay_appearance = ParseOverlayAppearance(document);
+    settings.color_theme = ParseColorTheme(document);
 
     const auto position = document.find("overlayPosition");
     if (position != document.end() && position->is_object()) {
@@ -159,7 +173,7 @@ bool SaveSettings(
     }
 
     nlohmann::json document = {
-        {"version", 5},
+        {"version", 6},
         {"language", [&settings] {
             const std::string language = CanonicalLanguageCode(settings.language);
             return language.empty() ? std::string("auto") : language;
@@ -168,6 +182,7 @@ bool SaveSettings(
         {"asrDevice", ComputeDeviceName(settings.asr_device)},
         {"rewriteDevice", ComputeDeviceName(settings.rewrite_device)},
         {"overlayAppearance", OverlayAppearanceName(settings.overlay_appearance)},
+        {"colorTheme", ColorThemeName(settings.color_theme)},
     };
     if (settings.overlay_position) {
         document["overlayPosition"] = {

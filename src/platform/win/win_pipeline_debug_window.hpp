@@ -7,6 +7,7 @@
 #include <windows.h>
 
 #include "app/app_controller.hpp"
+#include "app/settings.hpp"
 
 #include <memory>
 #include <string>
@@ -22,6 +23,7 @@ public:
     WinPipelineDebugWindow& operator=(const WinPipelineDebugWindow&) = delete;
 
     bool create(HINSTANCE instance, std::string& error);
+    void set_theme(app::ColorTheme theme);
     void update(const app::PipelineDebugSnapshot& snapshot);
     void show();
     void hide();

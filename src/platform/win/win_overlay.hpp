@@ -32,6 +32,7 @@ public:
     void set_preferred_position(std::optional<POINT> position);
     void set_preferred_size(std::optional<SIZE> size);
     void set_appearance(app::OverlayAppearance appearance);
+    void set_theme(app::ColorTheme theme);
     void set_animation_refresh_rate(float refresh_rate);
     void animation_frame();
     void update(const app::AppSnapshot& snapshot, std::string notice = {});

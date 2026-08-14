@@ -15,10 +15,22 @@ namespace {
 constexpr wchar_t kWindowClass[] = L"DictScribePipelineDebugWindow";
 constexpr wchar_t kRichEditClass[] = L"RICHEDIT50W";
 constexpr int kCopyButton = 1001;
-constexpr COLORREF kWindowColor = RGB(14, 17, 23);
-constexpr COLORREF kPaneColor = RGB(19, 24, 33);
-constexpr COLORREF kTextColor = RGB(229, 233, 240);
-constexpr COLORREF kMutedColor = RGB(154, 164, 181);
+
+COLORREF WindowColor(app::ColorTheme theme) {
+    return theme == app::ColorTheme::Light ? RGB(246, 248, 252) : RGB(14, 17, 23);
+}
+
+COLORREF PaneColor(app::ColorTheme theme) {
+    return theme == app::ColorTheme::Light ? RGB(255, 255, 255) : RGB(19, 24, 33);
+}
+
+COLORREF TextColor(app::ColorTheme theme) {
+    return theme == app::ColorTheme::Light ? RGB(27, 34, 47) : RGB(229, 233, 240);
+}
+
+COLORREF MutedColor(app::ColorTheme theme) {
+    return theme == app::ColorTheme::Light ? RGB(84, 96, 116) : RGB(154, 164, 181);
+}
 
 std::wstring Utf8ToWide(std::string_view text) {
     if (text.empty()) return {};
@@ -76,6 +88,29 @@ struct WinPipelineDebugWindow::Impl {
     HBRUSH window_brush = nullptr;
     HMODULE rich_edit = nullptr;
     app::PipelineDebugSnapshot snapshot;
+    app::ColorTheme theme = app::ColorTheme::Dark;
+
+    void apply_theme() {
+        if (!hwnd) return;
+        if (window_brush) DeleteObject(window_brush);
+        window_brush = CreateSolidBrush(WindowColor(theme));
+        const BOOL dark = theme == app::ColorTheme::Dark;
+        DwmSetWindowAttribute(hwnd, 20, &dark, sizeof(dark));
+        for (HWND edit : edits) {
+            if (!edit) continue;
+            SendMessageW(edit, EM_SETBKGNDCOLOR, 0, PaneColor(theme));
+            CHARFORMAT2W format{};
+            format.cbSize = sizeof(format);
+            format.dwMask = CFM_COLOR;
+            format.crTextColor = TextColor(theme);
+            SendMessageW(
+                edit, EM_SETCHARFORMAT, SCF_ALL,
+                reinterpret_cast<LPARAM>(&format));
+        }
+        RedrawWindow(
+            hwnd, nullptr, nullptr,
+            RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN);
+    }
 
     void layout() const {
         if (!hwnd) return;
@@ -146,11 +181,15 @@ struct WinPipelineDebugWindow::Impl {
             HDC dc = reinterpret_cast<HDC>(w_param);
             SetBkMode(dc, TRANSPARENT);
             SetTextColor(dc, reinterpret_cast<HWND>(l_param) == self->status
-                ? kMutedColor : kTextColor);
+                ? MutedColor(self->theme) : TextColor(self->theme));
             return reinterpret_cast<LRESULT>(self->window_brush);
         }
-        case WM_ERASEBKGND:
+        case WM_ERASEBKGND: {
+            RECT client{};
+            GetClientRect(hwnd, &client);
+            FillRect(reinterpret_cast<HDC>(w_param), &client, self->window_brush);
             return 1;
+        }
         case WM_GETMINMAXINFO: {
             auto* info = reinterpret_cast<MINMAXINFO*>(l_param);
             info->ptMinTrackSize = {900, 620};
@@ -185,7 +224,7 @@ bool WinPipelineDebugWindow::create(HINSTANCE instance, std::string& error) {
         error = "Could not load the Windows rich edit control for pipeline debugging.";
         return false;
     }
-    impl_->window_brush = CreateSolidBrush(kWindowColor);
+    impl_->window_brush = CreateSolidBrush(WindowColor(impl_->theme));
     impl_->ui_font = CreateFontW(
         -16, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
@@ -218,8 +257,7 @@ bool WinPipelineDebugWindow::create(HINSTANCE instance, std::string& error) {
         error = "Could not create the DictScribe pipeline debugger window.";
         return false;
     }
-    const BOOL dark = TRUE;
-    DwmSetWindowAttribute(impl_->hwnd, 20, &dark, sizeof(dark));
+    impl_->apply_theme();
 
     impl_->status = CreateWindowExW(
         0, L"STATIC", L"Live, in memory only · cleared when a new dictation starts",
@@ -249,13 +287,13 @@ bool WinPipelineDebugWindow::create(HINSTANCE instance, std::string& error) {
             reinterpret_cast<WPARAM>(impl_->ui_font), TRUE);
         SendMessageW(impl_->edits[index], WM_SETFONT,
             reinterpret_cast<WPARAM>(impl_->mono_font), TRUE);
-        SendMessageW(impl_->edits[index], EM_SETBKGNDCOLOR, 0, kPaneColor);
+        SendMessageW(impl_->edits[index], EM_SETBKGNDCOLOR, 0, PaneColor(impl_->theme));
         SendMessageW(impl_->edits[index], EM_SETREADONLY, TRUE, 0);
         SendMessageW(impl_->edits[index], EM_SETLIMITTEXT, 1024 * 1024, 0);
         CHARFORMAT2W format{};
         format.cbSize = sizeof(format);
         format.dwMask = CFM_COLOR;
-        format.crTextColor = kTextColor;
+        format.crTextColor = TextColor(impl_->theme);
         SendMessageW(impl_->edits[index], EM_SETCHARFORMAT, SCF_ALL,
             reinterpret_cast<LPARAM>(&format));
     }
@@ -264,6 +302,11 @@ bool WinPipelineDebugWindow::create(HINSTANCE instance, std::string& error) {
         reinterpret_cast<WPARAM>(impl_->ui_font), TRUE);
     impl_->layout();
     return true;
+}
+
+void WinPipelineDebugWindow::set_theme(app::ColorTheme theme) {
+    impl_->theme = theme;
+    impl_->apply_theme();
 }
 
 void WinPipelineDebugWindow::update(const app::PipelineDebugSnapshot& snapshot) {

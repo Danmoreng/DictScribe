@@ -25,7 +25,7 @@ namespace {
 
 constexpr wchar_t kSettingsClass[] = L"DictScribeSettingsWindow";
 constexpr int kLogicalWidth = 640;
-constexpr int kLogicalHeight = 660;
+constexpr int kLogicalHeight = 742;
 
 sk_sp<SkTypeface> FindTypeface(
     const sk_sp<SkFontMgr>& manager,
@@ -53,6 +53,17 @@ struct WinSettingsWindow::Impl {
     std::function<void(ui::SettingsAction)> action_handler;
 
     static constexpr int kVisibleLanguageRows = 8;
+
+    void apply_native_theme() const {
+        if (!hwnd) return;
+        const BOOL dark = model.settings.color_theme == app::ColorTheme::Dark;
+        DwmSetWindowAttribute(hwnd, 20, &dark, sizeof(dark));
+        RedrawWindow(
+            hwnd,
+            nullptr,
+            nullptr,
+            RDW_INVALIDATE | RDW_FRAME | RDW_UPDATENOW);
+    }
 
     int maximum_language_scroll() const {
         return std::max(
@@ -383,8 +394,7 @@ bool WinSettingsWindow::create(HINSTANCE instance, std::string& error) {
         error = "Could not create the DictScribe settings window.";
         return false;
     }
-    const BOOL dark = TRUE;
-    DwmSetWindowAttribute(impl_->hwnd, 20, &dark, sizeof(dark));
+    impl_->apply_native_theme();
 
     impl_->font_manager = SkFontMgr_New_DirectWrite();
     if (!impl_->font_manager) impl_->font_manager = SkFontMgr_New_GDI();
@@ -410,11 +420,15 @@ void WinSettingsWindow::set_action_handler(
 }
 
 void WinSettingsWindow::update(ui::SettingsViewModel model) {
+    const app::ColorTheme previous_theme = impl_->model.settings.color_theme;
     model.language_menu_open = impl_->model.language_menu_open;
     model.language_menu_scroll = impl_->model.language_menu_scroll;
     model.language_menu_highlight = impl_->model.language_menu_highlight;
     model.language_select_hovered = impl_->model.language_select_hovered;
     impl_->model = std::move(model);
+    if (impl_->model.settings.color_theme != previous_theme) {
+        impl_->apply_native_theme();
+    }
     if (visible()) InvalidateRect(impl_->hwnd, nullptr, FALSE);
 }
 

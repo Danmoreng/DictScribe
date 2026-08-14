@@ -93,7 +93,7 @@ if ($SkipUi) {
     $coreArgs += "-DSKIA_DIR=$SkiaDir"
     $coreArgs += "-DSKIA_OUT_DIR=$SkiaOutDir"
     $skiaArgs = Join-Path $SkiaOutDir "args.gn"
-    $direct3DEnabled = Test-Path $skiaArgs -and
+    $direct3DEnabled = (Test-Path $skiaArgs) -and
         (Select-String -Path $skiaArgs -Pattern '^skia_use_direct3d\s*=\s*true\s*$' -Quiet)
     $direct3DCMakeValue = if ($direct3DEnabled) { "ON" } else { "OFF" }
     $coreArgs += "-DDICTSCRIBE_SKIA_DIRECT3D=$direct3DCMakeValue"
@@ -160,6 +160,15 @@ cmake -S (Join-Path $ProjectRoot "cmake\asr-worker") `
 Assert-NativeSuccess "ASR worker configuration"
 cmake --build (Join-Path $BuildRoot "asr-worker") --config Release --parallel $Jobs
 Assert-NativeSuccess "ASR worker build"
+
+# The NeMo runtime DLLs may change when the same build tree is switched
+# between CPU and CUDA while the thin ASR executable itself remains current.
+# A POST_BUILD copy does not run for an otherwise up-to-date target, so refresh
+# the runtime payload explicitly after every SDK build.
+$asrWorkerDirectory = Join-Path $BuildRoot "asr-worker"
+Get-ChildItem (Join-Path $NemoInstall "bin") -Filter "*.dll" | ForEach-Object {
+    Copy-Item -LiteralPath $_.FullName -Destination $asrWorkerDirectory -Force
+}
 
 $cudaFlag = if ($Cuda) { "ON" } else { "OFF" }
 $rewriteCudaArgs = @()

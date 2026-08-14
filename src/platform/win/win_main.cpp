@@ -247,7 +247,9 @@ public:
             MessageBoxA(nullptr, error.c_str(), "DictScribe", MB_ICONERROR | MB_OK);
             return false;
         }
+        pipeline_debug_window_.set_theme(settings_.color_theme);
         overlay_.set_appearance(settings_.overlay_appearance);
+        overlay_.set_theme(settings_.color_theme);
         if (settings_.overlay_size) {
             overlay_.set_preferred_size(SIZE{
                 settings_.overlay_size->width,
@@ -686,6 +688,17 @@ private:
                 ? app::OverlayAppearance::Solid
                 : app::OverlayAppearance::Glass;
             overlay_.set_appearance(settings_.overlay_appearance);
+            persist_settings();
+            settings_window_.update(settings_view_model(controller_.snapshot()));
+            return;
+        }
+        if (action == ui::SettingsAction::ThemeDark ||
+            action == ui::SettingsAction::ThemeLight) {
+            settings_.color_theme = action == ui::SettingsAction::ThemeLight
+                ? app::ColorTheme::Light
+                : app::ColorTheme::Dark;
+            overlay_.set_theme(settings_.color_theme);
+            pipeline_debug_window_.set_theme(settings_.color_theme);
             persist_settings();
             settings_window_.update(settings_view_model(controller_.snapshot()));
             return;

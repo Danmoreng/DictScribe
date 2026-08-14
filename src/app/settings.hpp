@@ -20,6 +20,11 @@ enum class OverlayAppearance {
     Solid,
 };
 
+enum class ColorTheme {
+    Dark,
+    Light,
+};
+
 struct ScreenPosition {
     int x = 0;
     int y = 0;
@@ -36,6 +41,7 @@ struct AppSettings {
     ComputeDevice asr_device = ComputeDevice::Cpu;
     ComputeDevice rewrite_device = ComputeDevice::Cpu;
     OverlayAppearance overlay_appearance = OverlayAppearance::Glass;
+    ColorTheme color_theme = ColorTheme::Dark;
     std::optional<ScreenPosition> overlay_position;
     std::optional<ScreenSize> overlay_size;
 };
@@ -49,6 +55,7 @@ struct PendingDeviceSettings {
 [[nodiscard]] CleanupMode ParseCleanupMode(const std::string& value);
 [[nodiscard]] const char* ComputeDeviceName(ComputeDevice device);
 [[nodiscard]] const char* OverlayAppearanceName(OverlayAppearance appearance);
+[[nodiscard]] const char* ColorThemeName(ColorTheme theme);
 [[nodiscard]] std::filesystem::path DefaultSettingsPath();
 [[nodiscard]] AppSettings LoadSettings(const std::filesystem::path& path);
 [[nodiscard]] AppSettings LoadSettings();

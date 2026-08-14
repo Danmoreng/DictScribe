@@ -57,17 +57,56 @@ constexpr float kFooterHeight = 54.0F;
 constexpr float kBodyTop = 75.0F;
 constexpr float kBodyLineHeight = 23.0F;
 
-constexpr SkColor kBackground = SkColorSetARGB(132, 14, 17, 23);
-constexpr SkColor kSurface = SkColorSetARGB(168, 20, 24, 32);
-constexpr SkColor kElevated = SkColorSetARGB(218, 27, 32, 42);
-constexpr SkColor kBorder = SkColorSetRGB(61, 69, 84);
-constexpr SkColor kText = SkColorSetRGB(244, 246, 250);
-constexpr SkColor kMuted = SkColorSetRGB(158, 167, 184);
-constexpr SkColor kSubtle = SkColorSetRGB(107, 117, 136);
 constexpr SkColor kAccent = SkColorSetRGB(139, 124, 255);
 constexpr SkColor kRecording = SkColorSetRGB(255, 83, 112);
 constexpr SkColor kSuccess = SkColorSetRGB(73, 214, 158);
 constexpr SkColor kWarning = SkColorSetRGB(255, 186, 85);
+
+struct OverlayPalette {
+    SkColor background;
+    SkColor solid_clear;
+    SkColor surface;
+    SkColor elevated;
+    SkColor border;
+    SkColor text;
+    SkColor muted;
+    SkColor subtle;
+    SkColor hover;
+    SkColor selected;
+    SkColor resize_grip;
+};
+
+constexpr OverlayPalette kDarkPalette{
+    SkColorSetARGB(132, 14, 17, 23),
+    SkColorSetRGB(14, 17, 23),
+    SkColorSetARGB(168, 20, 24, 32),
+    SkColorSetARGB(218, 27, 32, 42),
+    SkColorSetRGB(61, 69, 84),
+    SkColorSetRGB(244, 246, 250),
+    SkColorSetRGB(158, 167, 184),
+    SkColorSetRGB(107, 117, 136),
+    SkColorSetRGB(36, 42, 55),
+    SkColorSetRGB(42, 39, 66),
+    SkColorSetARGB(150, 158, 167, 184),
+};
+
+constexpr OverlayPalette kLightPalette{
+    SkColorSetARGB(150, 248, 250, 253),
+    SkColorSetRGB(248, 250, 253),
+    SkColorSetARGB(205, 241, 245, 251),
+    SkColorSetARGB(235, 255, 255, 255),
+    SkColorSetRGB(177, 189, 207),
+    SkColorSetRGB(25, 32, 45),
+    SkColorSetRGB(79, 92, 112),
+    SkColorSetRGB(128, 143, 164),
+    SkColorSetRGB(225, 231, 240),
+    SkColorSetRGB(229, 225, 252),
+    SkColorSetARGB(175, 91, 105, 126),
+};
+
+const OverlayPalette& PaletteFor(app::ColorTheme theme) {
+    return theme == app::ColorTheme::Light ? kLightPalette : kDarkPalette;
+}
 
 enum class AccentState : int {
     Disabled = 0,
@@ -103,7 +142,7 @@ UINT EffectiveDpiForMonitor(HMONITOR monitor) {
     return system_dpi == 0 ? 96 : system_dpi;
 }
 
-bool EnableAcrylicBackdrop(HWND window) {
+bool EnableAcrylicBackdrop(HWND window, app::ColorTheme theme) {
     HMODULE user32 = GetModuleHandleW(L"user32.dll");
     if (!user32) return false;
     const auto set_attribute = reinterpret_cast<SetWindowCompositionAttributeFunction>(
@@ -114,7 +153,9 @@ bool EnableAcrylicBackdrop(HWND window) {
     AccentPolicy policy;
     policy.state = AccentState::AcrylicBlurBehind;
     policy.flags = 2;
-    policy.gradient_color = 0x6617110EU;
+    policy.gradient_color = theme == app::ColorTheme::Light
+        ? 0x99FAF8F5U
+        : 0x6617110EU;
     WindowCompositionAttributeData data{
         kAccentPolicyAttribute,
         &policy,
@@ -238,18 +279,19 @@ SkColor StatusColor(app::DictationMode mode) {
 }
 
 struct OceanWaveLayer {
-    SkColor color;
+    SkColor dark_color;
+    SkColor light_color;
     float speed;
     float wavelength;
     float maximum_amplitude;
 };
 
 constexpr std::array<OceanWaveLayer, 5> kOceanWaveLayers{{
-    {SkColorSetARGB(217,   4,  20,  45), 0.006F, 0.003F,  40.0F},
-    {SkColorSetARGB(204,   8,  38,  75), 0.010F, 0.005F,  60.0F},
-    {SkColorSetARGB(191,  12,  65, 115), 0.014F, 0.004F,  85.0F},
-    {SkColorSetARGB(166,   0, 119, 182), 0.020F, 0.007F, 110.0F},
-    {SkColorSetARGB(115,  72, 202, 228), 0.026F, 0.005F, 135.0F},
+    {SkColorSetARGB(217,   4,  20,  45), SkColorSetARGB(170, 219, 234, 254), 0.006F, 0.003F,  40.0F},
+    {SkColorSetARGB(204,   8,  38,  75), SkColorSetARGB(160, 186, 230, 253), 0.010F, 0.005F,  60.0F},
+    {SkColorSetARGB(191,  12,  65, 115), SkColorSetARGB(145, 125, 211, 252), 0.014F, 0.004F,  85.0F},
+    {SkColorSetARGB(166,   0, 119, 182), SkColorSetARGB(130,  56, 189, 248), 0.020F, 0.007F, 110.0F},
+    {SkColorSetARGB(115,  72, 202, 228), SkColorSetARGB(105,  14, 165, 233), 0.026F, 0.005F, 135.0F},
 }};
 
 void DrawOceanWaves(
@@ -258,6 +300,7 @@ void DrawOceanWaves(
     float top,
     float bottom,
     bool glass,
+    bool light,
     float low_frequency_level,
     float mid_frequency_level,
     float phase) {
@@ -333,9 +376,13 @@ void DrawOceanWaves(
         const U8CPU middle_alpha = glass ? 190 : 255;
         const U8CPU bottom_alpha = glass ? 226 : 255;
         const std::array<SkColor4f, 3> gradient_colors{
-            SkColor4f::FromColor(layer.color),
-            SkColor4f::FromColor(SkColorSetARGB(middle_alpha, 2, 13, 31)),
-            SkColor4f::FromColor(SkColorSetARGB(bottom_alpha, 1, 5, 10)),
+            SkColor4f::FromColor(light ? layer.light_color : layer.dark_color),
+            SkColor4f::FromColor(light
+                ? SkColorSetARGB(middle_alpha, 214, 235, 251)
+                : SkColorSetARGB(middle_alpha, 2, 13, 31)),
+            SkColor4f::FromColor(light
+                ? SkColorSetARGB(bottom_alpha, 238, 246, 253)
+                : SkColorSetARGB(bottom_alpha, 1, 5, 10)),
         };
         const SkPoint gradient_points[2]{
             SkPoint::Make(0.0F, layer_base_y - maximum_amplitude),
@@ -355,7 +402,9 @@ void DrawOceanWaves(
             const U8CPU highlight_alpha = static_cast<U8CPU>(255.0F * std::min(
                 0.50F,
                 current_amplitude / maximum_amplitude * 0.60F));
-            SkPaint highlight = Fill(SkColorSetARGB(highlight_alpha, 180, 240, 255));
+            SkPaint highlight = Fill(light
+                ? SkColorSetARGB(highlight_alpha, 14, 116, 194)
+                : SkColorSetARGB(highlight_alpha, 180, 240, 255));
             highlight.setStyle(SkPaint::kStroke_Style);
             highlight.setStrokeWidth(index == kOceanWaveLayers.size() - 1 ? 2.0F : 1.0F);
             if (glass) {
@@ -395,6 +444,7 @@ struct WinOverlay::Impl {
     sk_sp<SkTypeface> semibold;
     app::AppSnapshot snapshot;
     app::OverlayAppearance appearance = app::OverlayAppearance::Glass;
+    app::ColorTheme theme = app::ColorTheme::Dark;
     std::string notice;
     std::function<void(std::string)> language_handler;
     std::function<void()> settings_handler;
@@ -647,6 +697,19 @@ struct WinOverlay::Impl {
             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
 
         sync_backdrop(IsWindowVisible(hwnd) != FALSE);
+        InvalidateRect(hwnd, nullptr, FALSE);
+        if (IsWindowVisible(hwnd)) UpdateWindow(hwnd);
+    }
+
+    void apply_theme(app::ColorTheme value) {
+        theme = value;
+        if (!hwnd) return;
+        const BOOL dark = theme == app::ColorTheme::Dark;
+        DwmSetWindowAttribute(hwnd, 20, &dark, sizeof(dark));
+        if (backdrop_hwnd) {
+            DwmSetWindowAttribute(backdrop_hwnd, 20, &dark, sizeof(dark));
+            EnableAcrylicBackdrop(backdrop_hwnd, theme);
+        }
         InvalidateRect(hwnd, nullptr, FALSE);
         if (IsWindowVisible(hwnd)) UpdateWindow(hwnd);
     }
@@ -1182,10 +1245,11 @@ struct WinOverlay::Impl {
         }
         SkCanvas* canvas = frame_surface->getCanvas();
         const float scale = static_cast<float>(dpi) / 96.0F;
+        const OverlayPalette& palette = PaletteFor(theme);
         canvas->clear(
             appearance == app::OverlayAppearance::Glass
                 ? SK_ColorTRANSPARENT
-                : SkColorSetRGB(14, 17, 23));
+                : palette.solid_clear);
         canvas->save();
         canvas->scale(scale, scale);
 
@@ -1204,7 +1268,7 @@ struct WinOverlay::Impl {
         const SkFont key_font(semibold, 11.5F);
         const SkFont menu_font(regular, 12.5F);
 
-        canvas->drawRect(SkRect::MakeWH(width, height), Fill(kBackground));
+        canvas->drawRect(SkRect::MakeWH(width, height), Fill(palette.background));
         if (snapshot.mode == app::DictationMode::Recording) {
             DrawOceanWaves(
                 canvas[0],
@@ -1212,28 +1276,29 @@ struct WinOverlay::Impl {
                 kHeaderHeight + 4.0F,
                 height - kFooterHeight,
                 appearance == app::OverlayAppearance::Glass,
+                theme == app::ColorTheme::Light,
                 ocean_low_level,
                 ocean_mid_level,
                 ocean_phase);
         }
-        SkPaint border = Fill(kBorder);
+        SkPaint border = Fill(palette.border);
         border.setStyle(SkPaint::kStroke_Style);
         border.setStrokeWidth(1.0F);
 
         const SkColor status_color = StatusColor(snapshot.mode);
         canvas->drawCircle(28.0F, 26.0F, 5.0F, Fill(status_color));
-        DrawText(canvas[0], StatusLabel(snapshot), 43.0F, 31.0F, status_font, kText);
+        DrawText(canvas[0], StatusLabel(snapshot), 43.0F, 31.0F, status_font, palette.text);
 
         const std::string language = LanguageBadgeText(snapshot);
         const SkRect badge_rect = language_badge_rect(width);
         const float badge_x = badge_rect.left();
-        const SkColor badge_fill = language_pressed ? kBorder : kElevated;
+        const SkColor badge_fill = language_pressed ? palette.border : palette.elevated;
         canvas->drawRoundRect(
             badge_rect,
             7.0F,
             7.0F,
             Fill(badge_fill));
-        SkPaint badge_border = Fill(kBorder);
+        SkPaint badge_border = Fill(palette.border);
         badge_border.setStyle(SkPaint::kStroke_Style);
         badge_border.setStrokeWidth(1.0F);
         canvas->drawRoundRect(
@@ -1251,8 +1316,8 @@ struct WinOverlay::Impl {
             badge_x + 9.0F,
             30.5F,
             badge_font,
-            kMuted);
-        SkPaint chevron = Fill(kMuted);
+            palette.muted);
+        SkPaint chevron = Fill(palette.muted);
         chevron.setStyle(SkPaint::kStroke_Style);
         chevron.setStrokeWidth(1.4F);
         chevron.setStrokeCap(SkPaint::kRound_Cap);
@@ -1270,7 +1335,7 @@ struct WinOverlay::Impl {
             settings_rect,
             7.0F,
             7.0F,
-            Fill(settings_pressed ? kBorder : kElevated));
+            Fill(settings_pressed ? palette.border : palette.elevated));
         canvas->drawRoundRect(settings_rect, 7.0F, 7.0F, badge_border);
         DrawText(
             canvas[0],
@@ -1278,7 +1343,7 @@ struct WinOverlay::Impl {
             settings_rect.centerX() - TextWidth(hint_font, "Settings") * 0.5F,
             30.5F,
             hint_font,
-            kMuted);
+            palette.muted);
 
         canvas->drawLine(24.0F, kHeaderHeight - 1.0F, width - 24.0F, kHeaderHeight - 1.0F, border);
 
@@ -1305,7 +1370,7 @@ struct WinOverlay::Impl {
                 baseline,
                 body_font,
                 snapshot.mode == app::DictationMode::Error ? kWarning :
-                    (display.empty() ? kMuted : kText));
+                    (display.empty() ? palette.muted : palette.text));
             baseline += kBodyLineHeight;
         }
         canvas->restore();
@@ -1325,16 +1390,16 @@ struct WinOverlay::Impl {
                 SkRect::MakeXYWH(width - 18.0F, scrollbar_track_top, 3.0F, track_height),
                 1.5F,
                 1.5F,
-                Fill(kSurface));
+                Fill(palette.surface));
             canvas->drawRoundRect(
                 SkRect::MakeXYWH(
                     width - 19.0F,
                     scrollbar_thumb_top,
                     5.0F,
-                    scrollbar_thumb_bottom - scrollbar_thumb_top),
+                scrollbar_thumb_bottom - scrollbar_thumb_top),
                 2.5F,
                 2.5F,
-                Fill(kMuted));
+                Fill(palette.muted));
         } else {
             scrollbar_thumb_top = scrollbar_thumb_bottom = scrollbar_track_top;
         }
@@ -1342,14 +1407,14 @@ struct WinOverlay::Impl {
         const float footer_top = height - kFooterHeight;
         canvas->drawRect(
             SkRect::MakeXYWH(0.0F, footer_top, width, kFooterHeight),
-            Fill(kSurface));
+            Fill(palette.surface));
 
         const auto draw_keycap = [&](float x, float y, float key_width, std::string_view key) {
             canvas->drawRoundRect(
                 SkRect::MakeXYWH(x, y, key_width, 30.0F),
                 7.0F,
                 7.0F,
-                Fill(kElevated));
+                Fill(palette.elevated));
             canvas->drawRoundRect(
                 SkRect::MakeXYWH(x + 0.5F, y + 0.5F, key_width - 1.0F, 29.0F),
                 7.0F,
@@ -1361,24 +1426,24 @@ struct WinOverlay::Impl {
                 x + (key_width - TextWidth(key_font, key)) * 0.5F,
                 y + 20.0F,
                 key_font,
-                kText);
+                palette.text);
         };
 
         const float key_y = footer_top + 12.0F;
         if (snapshot.mode == app::DictationMode::Recording) {
             draw_keycap(24.0F, key_y, 58.0F, "Enter");
-            DrawText(canvas[0], "Finish & insert", 94.0F, key_y + 20.0F, hint_font, kMuted);
+            DrawText(canvas[0], "Finish & insert", 94.0F, key_y + 20.0F, hint_font, palette.muted);
             const float cancel_x = width - 174.0F;
             draw_keycap(cancel_x, key_y, 44.0F, "Esc");
-            DrawText(canvas[0], "Cancel", cancel_x + 56.0F, key_y + 20.0F, hint_font, kMuted);
+            DrawText(canvas[0], "Cancel", cancel_x + 56.0F, key_y + 20.0F, hint_font, palette.muted);
         } else if (snapshot.mode == app::DictationMode::Finalizing) {
             const char* progress = snapshot.status.find("Switching") != std::string::npos
                 ? "Switching language…"
                 : "Finalizing locally…";
-            DrawText(canvas[0], progress, 28.0F, key_y + 20.0F, hint_font, kMuted);
+            DrawText(canvas[0], progress, 28.0F, key_y + 20.0F, hint_font, palette.muted);
         } else {
             draw_keycap(24.0F, key_y, 124.0F, "Ctrl Alt Space");
-            DrawText(canvas[0], "Start dictation", 160.0F, key_y + 20.0F, hint_font, kMuted);
+            DrawText(canvas[0], "Start dictation", 160.0F, key_y + 20.0F, hint_font, palette.muted);
         }
 
         if (language_menu_open) {
@@ -1392,10 +1457,12 @@ struct WinOverlay::Impl {
                 shadow_rect,
                 11.0F,
                 11.0F,
-                Fill(SkColorSetARGB(110, 0, 0, 0)));
-            canvas->drawRoundRect(menu_rect, 9.0F, 9.0F, Fill(kElevated));
+                Fill(theme == app::ColorTheme::Light
+                    ? SkColorSetARGB(45, 31, 43, 61)
+                    : SkColorSetARGB(110, 0, 0, 0)));
+            canvas->drawRoundRect(menu_rect, 9.0F, 9.0F, Fill(palette.elevated));
 
-            SkPaint menu_border = Fill(kBorder);
+            SkPaint menu_border = Fill(palette.border);
             menu_border.setStyle(SkPaint::kStroke_Style);
             menu_border.setStrokeWidth(1.0F);
             canvas->drawRoundRect(
@@ -1415,26 +1482,26 @@ struct WinOverlay::Impl {
                 if (option >= static_cast<int>(app::kLanguageOptions.size())) break;
                 const SkRect item = language_option_rect(row, width);
                 if (option == pressed_language_option) {
-                    canvas->drawRoundRect(item, 6.0F, 6.0F, Fill(kBorder));
+                    canvas->drawRoundRect(item, 6.0F, 6.0F, Fill(palette.border));
                 } else if (option == hovered_language_option) {
                     canvas->drawRoundRect(
                         item,
                         6.0F,
                         6.0F,
-                        Fill(SkColorSetRGB(36, 42, 55)));
+                        Fill(palette.hover));
                 } else if (option == selected) {
                     canvas->drawRoundRect(
                         item,
                         6.0F,
                         6.0F,
-                        Fill(SkColorSetRGB(42, 39, 66)));
+                        Fill(palette.selected));
                 }
 
                 const float center_y = item.centerY();
                 if (option == selected) {
                     canvas->drawCircle(item.left() + 14.0F, center_y, 3.5F, Fill(kAccent));
                 } else {
-                    canvas->drawCircle(item.left() + 14.0F, center_y, 2.0F, Fill(kSubtle));
+                    canvas->drawCircle(item.left() + 14.0F, center_y, 2.0F, Fill(palette.subtle));
                 }
                 DrawText(
                     canvas[0],
@@ -1442,7 +1509,7 @@ struct WinOverlay::Impl {
                     item.left() + 27.0F,
                     center_y + 4.5F,
                     menu_font,
-                    option == selected ? kText : kMuted);
+                    option == selected ? palette.text : palette.muted);
             }
             const float track_height = menu_rect.height() - 20.0F;
             const float thumb_height = track_height * static_cast<float>(visible_rows) /
@@ -1454,12 +1521,12 @@ struct WinOverlay::Impl {
                 SkRect::MakeXYWH(menu_rect.right() - 9.0F, menu_rect.top() + 10.0F, 3.0F, track_height),
                 1.5F,
                 1.5F,
-                Fill(kSurface));
+                Fill(palette.surface));
             canvas->drawRoundRect(
                 SkRect::MakeXYWH(menu_rect.right() - 9.0F, thumb_y, 3.0F, thumb_height),
                 1.5F,
                 1.5F,
-                Fill(kMuted));
+                Fill(palette.muted));
         }
 
         canvas->drawRoundRect(
@@ -1468,7 +1535,7 @@ struct WinOverlay::Impl {
             kCornerRadius,
             border);
 
-        SkPaint resize_grip = Fill(SkColorSetARGB(150, 158, 167, 184));
+        SkPaint resize_grip = Fill(palette.resize_grip);
         resize_grip.setStyle(SkPaint::kStroke_Style);
         resize_grip.setStrokeWidth(1.2F);
         resize_grip.setStrokeCap(SkPaint::kRound_Cap);
@@ -1559,16 +1626,12 @@ bool WinOverlay::create(HINSTANCE instance, std::string& error) {
         error = "Could not create the DictScribe overlay window.";
         return false;
     }
-    const BOOL dark = TRUE;
-    DwmSetWindowAttribute(impl_->hwnd, 20, &dark, sizeof(dark));
     const int disable_dwm_rounding = 1;
     DwmSetWindowAttribute(
         impl_->hwnd, 33, &disable_dwm_rounding, sizeof(disable_dwm_rounding));
-    DwmSetWindowAttribute(impl_->backdrop_hwnd, 20, &dark, sizeof(dark));
     const int rounded_backdrop = 2;
     DwmSetWindowAttribute(
         impl_->backdrop_hwnd, 33, &rounded_backdrop, sizeof(rounded_backdrop));
-    EnableAcrylicBackdrop(impl_->backdrop_hwnd);
 
     impl_->font_manager = SkFontMgr_New_DirectWrite();
     if (!impl_->font_manager) impl_->font_manager = SkFontMgr_New_GDI();
@@ -1599,6 +1662,7 @@ bool WinOverlay::create(HINSTANCE instance, std::string& error) {
         impl_->fall_back_to_raster();
     }
 #endif
+    impl_->apply_theme(impl_->theme);
     impl_->apply_appearance(impl_->appearance);
     return true;
 }
@@ -1625,6 +1689,10 @@ void WinOverlay::set_preferred_size(std::optional<SIZE> size) {
 
 void WinOverlay::set_appearance(app::OverlayAppearance appearance) {
     impl_->apply_appearance(appearance);
+}
+
+void WinOverlay::set_theme(app::ColorTheme theme) {
+    impl_->apply_theme(theme);
 }
 
 void WinOverlay::update(const app::AppSnapshot& snapshot, std::string notice) {
