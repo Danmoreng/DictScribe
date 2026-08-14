@@ -54,6 +54,7 @@ struct AppSnapshot {
     bool asr_ready = false;
     bool rewrite_ready = false;
     bool rewrite_in_progress = false;
+    bool insertion_confirmation_required = false;
     float audio_rms = 0.0F;
     float audio_peak = 0.0F;
     std::string status = "Starting local speech recognition...";
@@ -91,7 +92,6 @@ public:
 private:
     struct ActiveRewrite {
         std::string id;
-        RewriteTailSnapshot transcript;
         std::chrono::steady_clock::time_point started;
     };
 
@@ -103,9 +103,9 @@ private:
     void handle_rewrite_message(const nlohmann::json& message);
     void update_ready_state_locked();
     void refresh_transcript_locked();
-    void queue_rewrite_locked();
-    bool dispatch_rewrite_locked();
+    bool dispatch_final_cleanup_locked();
     void clear_active_rewrite_locked();
+    void complete_with_raw_fallback_locked(std::string status, std::string error = {});
     void finish_dictation_locked();
     void set_error_locked(std::string message);
     std::string next_id_locked(const char* prefix);
@@ -121,11 +121,6 @@ private:
     std::uint64_t dictation_generation_ = 0;
     bool rewrite_unavailable_ = false;
     bool language_restart_pending_ = false;
-    bool rewrite_pending_ = false;
-    bool has_rewrite_dispatch_time_ = false;
-    std::chrono::steady_clock::time_point rewrite_pending_since_{};
-    std::chrono::steady_clock::time_point rewrite_due_{};
-    std::chrono::steady_clock::time_point last_rewrite_dispatch_{};
     std::string session_id_;
     std::string dictation_id_;
 };

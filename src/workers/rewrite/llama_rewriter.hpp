@@ -49,6 +49,14 @@ private:
     std::string format_prompt(
         const RewriteTailInput& input,
         std::string& error) const;
+    std::string format_final_prompt(
+        const std::string& source_language,
+        const std::string& transcript,
+        std::string& error) const;
+    std::string format_chat_prompt(
+        const char* system_prompt,
+        const std::string& user_message,
+        std::string& error) const;
 
     llama_model* model_ = nullptr;
     llama_context* context_ = nullptr;

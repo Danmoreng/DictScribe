@@ -110,8 +110,10 @@ CommandLineArguments ReadCommandLine() {
     return result;
 }
 
-const wchar_t* ToggleMenuLabel(app::DictationMode mode) {
-    if (mode == app::DictationMode::Recording) return L"Finish dictation";
+const wchar_t* ToggleMenuLabel(const app::AppSnapshot& snapshot) {
+    if (snapshot.mode == app::DictationMode::Recording) return L"Finish dictation";
+    if (snapshot.mode == app::DictationMode::Complete &&
+        snapshot.insertion_confirmation_required) return L"Insert text";
     return L"Start dictation";
 }
 
@@ -399,6 +401,11 @@ private:
 
     void toggle_dictation() {
         const app::AppSnapshot snapshot = controller_.snapshot();
+        if (session_active_ && snapshot.mode == app::DictationMode::Complete &&
+            snapshot.insertion_confirmation_required) {
+            commit(snapshot);
+            return;
+        }
         if (snapshot.mode == app::DictationMode::Ready || snapshot.mode == app::DictationMode::Complete) {
             target_ = CaptureTargetContext(overlay_.window(), control_window_);
             session_active_ = true;
@@ -463,7 +470,8 @@ private:
         }
         previous_mode_ = snapshot.mode;
 
-        if (session_active_ && snapshot.mode == app::DictationMode::Complete) {
+        if (session_active_ && snapshot.mode == app::DictationMode::Complete &&
+            !snapshot.insertion_confirmation_required) {
             commit(snapshot);
         } else if (session_active_ && snapshot.mode == app::DictationMode::Error) {
             session_active_ = false;
@@ -569,7 +577,7 @@ private:
     void show_tray_menu() {
         const app::AppSnapshot snapshot = controller_.snapshot();
         HMENU menu = CreatePopupMenu();
-        AppendMenuW(menu, MF_STRING, kCommandToggle, ToggleMenuLabel(snapshot.mode));
+        AppendMenuW(menu, MF_STRING, kCommandToggle, ToggleMenuLabel(snapshot));
         AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
         AppendMenuW(menu, MF_STRING, kCommandSettings, L"Settings...");
         AppendMenuW(menu, MF_STRING, kCommandPipelineDebug, L"Pipeline debugger...");

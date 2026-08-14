@@ -173,8 +173,12 @@ const char* StatusLabel(const app::AppSnapshot& snapshot) {
     case app::DictationMode::Ready: return "Ready";
     case app::DictationMode::StartingRecording: return "Opening microphone";
     case app::DictationMode::Recording: return "Listening";
-    case app::DictationMode::Finalizing: return "Finalizing speech";
-    case app::DictationMode::Complete: return "Complete";
+    case app::DictationMode::Finalizing:
+        return snapshot.cleanup_mode == app::CleanupMode::Ai &&
+                !snapshot.raw_final_text.empty()
+            ? "Cleaning up dictation" : "Finalizing speech";
+    case app::DictationMode::Complete:
+        return snapshot.insertion_confirmation_required ? "Review cleanup" : "Complete";
     case app::DictationMode::Cancelling: return "Cancelling";
     case app::DictationMode::Error: return "Needs attention";
     }
@@ -405,6 +409,20 @@ void HideOverlay(WindowState& state) {
 
 void ToggleDictation(WindowState& state, const sk_sp<SkTypeface>& regular) {
     const app::AppSnapshot snapshot = state.controller->snapshot();
+    if (state.session_active && snapshot.mode == app::DictationMode::Complete &&
+        snapshot.insertion_confirmation_required) {
+        state.session_active = false;
+        state.desktop.set_session_hotkeys(false);
+        HideOverlay(state);
+        const std::string& text = !snapshot.rewritten_text.empty()
+            ? snapshot.rewritten_text
+            : (!snapshot.raw_final_text.empty() ? snapshot.raw_final_text : snapshot.live_text);
+        std::string error;
+        if (!text.empty() && !state.desktop.insert_text(state.target, text, error)) {
+            std::cerr << "DictScribe insertion: " << error << '\n';
+        }
+        return;
+    }
     if (snapshot.mode == app::DictationMode::Ready ||
         snapshot.mode == app::DictationMode::Complete) {
         const auto candidate = state.desktop.capture_target();
@@ -618,14 +636,30 @@ void Render(
     const float key_y = footer_top + 12.0F;
     if (state.snapshot.mode == app::DictationMode::Recording) {
         draw_keycap(24.0F, 58.0F, "Enter");
-        DrawText(*canvas, "Finish & insert", 94.0F, key_y + 20.0F, hint_font, kMuted);
+        DrawText(
+            *canvas,
+            state.snapshot.cleanup_mode == app::CleanupMode::Ai
+                ? "Finish & clean up" : "Finish & insert",
+            94.0F,
+            key_y + 20.0F,
+            hint_font,
+            kMuted);
         draw_keycap(logical_width - 174.0F, 44.0F, "Esc");
         DrawText(*canvas, "Cancel", logical_width - 118.0F, key_y + 20.0F, hint_font, kMuted);
     } else if (state.snapshot.mode == app::DictationMode::Finalizing) {
         const char* progress = state.snapshot.status.find("Switching") != std::string::npos
             ? "Switching language..."
-            : "Finalizing locally...";
+            : (state.snapshot.cleanup_mode == app::CleanupMode::Ai &&
+               !state.snapshot.raw_final_text.empty()
+                ? "Cleaning up the complete dictation..."
+                : "Finalizing speech recognition...");
         DrawText(*canvas, progress, 28.0F, key_y + 20.0F, hint_font, kMuted);
+    } else if (state.snapshot.mode == app::DictationMode::Complete &&
+               state.snapshot.insertion_confirmation_required) {
+        draw_keycap(24.0F, 58.0F, "Enter");
+        DrawText(*canvas, "Insert text", 94.0F, key_y + 20.0F, hint_font, kMuted);
+        draw_keycap(logical_width - 174.0F, 44.0F, "Esc");
+        DrawText(*canvas, "Discard", logical_width - 118.0F, key_y + 20.0F, hint_font, kMuted);
     } else {
         draw_keycap(24.0F, 124.0F, "Ctrl Alt Space");
         DrawText(*canvas, "Start dictation", 160.0F, key_y + 20.0F, hint_font, kMuted);
@@ -1036,7 +1070,8 @@ int RunDictationWindow(
         state.settings_model.device_controls_enabled = app::CanSetComputeDevice(state.snapshot);
         UpdateLevelHistory(state);
 
-        if (state.session_active && state.snapshot.mode == app::DictationMode::Complete) {
+        if (state.session_active && state.snapshot.mode == app::DictationMode::Complete &&
+            !state.snapshot.insertion_confirmation_required) {
             state.session_active = false;
             state.desktop.set_session_hotkeys(false);
             HideOverlay(state);

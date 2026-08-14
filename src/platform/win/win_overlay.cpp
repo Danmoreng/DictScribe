@@ -259,8 +259,12 @@ const char* StatusLabel(const app::AppSnapshot& snapshot) {
     case app::DictationMode::Ready: return "Ready";
     case app::DictationMode::StartingRecording: return "Opening microphone";
     case app::DictationMode::Recording: return "Listening";
-    case app::DictationMode::Finalizing: return "Finalizing speech";
-    case app::DictationMode::Complete: return "Complete";
+    case app::DictationMode::Finalizing:
+        return snapshot.cleanup_mode == app::CleanupMode::Ai &&
+                !snapshot.raw_final_text.empty()
+            ? "Cleaning up dictation" : "Finalizing speech";
+    case app::DictationMode::Complete:
+        return snapshot.insertion_confirmation_required ? "Review cleanup" : "Complete";
     case app::DictationMode::Cancelling: return "Cancelling";
     case app::DictationMode::Error: return "Needs attention";
     }
@@ -1432,15 +1436,32 @@ struct WinOverlay::Impl {
         const float key_y = footer_top + 12.0F;
         if (snapshot.mode == app::DictationMode::Recording) {
             draw_keycap(24.0F, key_y, 58.0F, "Enter");
-            DrawText(canvas[0], "Finish & insert", 94.0F, key_y + 20.0F, hint_font, palette.muted);
+            DrawText(
+                canvas[0],
+                snapshot.cleanup_mode == app::CleanupMode::Ai
+                    ? "Finish & clean up" : "Finish & insert",
+                94.0F,
+                key_y + 20.0F,
+                hint_font,
+                palette.muted);
             const float cancel_x = width - 174.0F;
             draw_keycap(cancel_x, key_y, 44.0F, "Esc");
             DrawText(canvas[0], "Cancel", cancel_x + 56.0F, key_y + 20.0F, hint_font, palette.muted);
         } else if (snapshot.mode == app::DictationMode::Finalizing) {
             const char* progress = snapshot.status.find("Switching") != std::string::npos
                 ? "Switching language…"
-                : "Finalizing locally…";
+                : (snapshot.cleanup_mode == app::CleanupMode::Ai &&
+                   !snapshot.raw_final_text.empty()
+                    ? "Cleaning up the complete dictation…"
+                    : "Finalizing speech recognition…");
             DrawText(canvas[0], progress, 28.0F, key_y + 20.0F, hint_font, palette.muted);
+        } else if (snapshot.mode == app::DictationMode::Complete &&
+                   snapshot.insertion_confirmation_required) {
+            draw_keycap(24.0F, key_y, 58.0F, "Enter");
+            DrawText(canvas[0], "Insert text", 94.0F, key_y + 20.0F, hint_font, palette.muted);
+            const float cancel_x = width - 174.0F;
+            draw_keycap(cancel_x, key_y, 44.0F, "Esc");
+            DrawText(canvas[0], "Discard", cancel_x + 56.0F, key_y + 20.0F, hint_font, palette.muted);
         } else {
             draw_keycap(24.0F, key_y, 124.0F, "Ctrl Alt Space");
             DrawText(canvas[0], "Start dictation", 160.0F, key_y + 20.0F, hint_font, palette.muted);

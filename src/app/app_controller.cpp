@@ -11,10 +11,7 @@ namespace dictscribe::app {
 
 namespace {
 
-constexpr auto kLiveCleanupDebounce = std::chrono::milliseconds(1200);
-constexpr auto kRewriteInterval = std::chrono::seconds(8);
-constexpr auto kRewriteTimeout = std::chrono::seconds(12);
-constexpr std::size_t kMinimumLiveRewriteWords = 4;
+constexpr auto kFinalCleanupTimeout = std::chrono::seconds(35);
 
 std::size_t ApproximateWordCount(std::string_view text) {
     std::size_t count = 0;
@@ -60,8 +57,6 @@ bool AppController::start(const AppConfig& config) {
         state_.rewrite_use_gpu = config.rewrite_use_gpu;
         rewrite_unavailable_ = false;
         language_restart_pending_ = false;
-        rewrite_pending_ = false;
-        has_rewrite_dispatch_time_ = false;
         active_rewrite_.reset();
         session_id_.clear();
         dictation_id_.clear();
@@ -95,7 +90,7 @@ bool AppController::start_asr_worker(const AppConfig& config, std::string& error
 bool AppController::start_rewrite_worker(const AppConfig& config, std::string& error) {
     std::vector<std::string> arguments = {
         "--stdio", "--model", config.rewrite_model.string(), "--protocol-version", "2",
-        "--context-size", "2048"};
+        "--context-size", "4096"};
     if (config.rewrite_use_gpu) {
         arguments.insert(arguments.end(), {"--gpu-layers", "99"});
     }
@@ -137,6 +132,7 @@ bool AppController::start_recording_locked(bool clear_transcript) {
         state_.live_text.clear();
         state_.raw_final_text.clear();
         state_.rewritten_text.clear();
+        state_.insertion_confirmation_required = false;
         state_.error.clear();
         dictation_id_ = next_id_locked("dictation");
         language_restart_pending_ = false;
@@ -146,16 +142,9 @@ bool AppController::start_recording_locked(bool clear_transcript) {
     session_id_ = next_id_locked("session");
     state_.audio_rms = 0.0F;
     state_.audio_peak = 0.0F;
-    if (clear_transcript) {
-        rewrite_pending_ = false;
-        has_rewrite_dispatch_time_ = false;
-    } else if (state_.cleanup_mode == CleanupMode::Ai && transcript_.has_stable_backlog()) {
-        rewrite_pending_ = false;
-        queue_rewrite_locked();
-    }
     state_.mode = DictationMode::StartingRecording;
     state_.status = state_.cleanup_mode == CleanupMode::Ai
-        ? "Opening the microphone - AI cleanup will start when ready"
+        ? "Opening the microphone - cleanup runs after dictation"
         : "Opening the default microphone...";
 
     std::string error;
@@ -193,6 +182,22 @@ bool AppController::stop_for_language_change_locked() {
 
 void AppController::cancel_recording() {
     std::lock_guard lock(mutex_);
+    if (state_.mode == DictationMode::Complete &&
+        state_.insertion_confirmation_required) {
+        ++dictation_generation_;
+        transcript_.reset(dictation_generation_);
+        clear_active_rewrite_locked();
+        state_.mode = DictationMode::Ready;
+        state_.status = "Cleanup result discarded - ready for another dictation";
+        state_.live_text.clear();
+        state_.raw_final_text.clear();
+        state_.rewritten_text.clear();
+        state_.insertion_confirmation_required = false;
+        state_.pipeline_debug = {};
+        session_id_.clear();
+        dictation_id_.clear();
+        return;
+    }
     if (state_.mode != DictationMode::Recording &&
         state_.mode != DictationMode::StartingRecording) return;
     state_.mode = DictationMode::Cancelling;
@@ -233,7 +238,6 @@ bool AppController::set_cleanup_mode(CleanupMode mode) {
         config = config_;
         state_.cleanup_mode = mode;
         state_.error.clear();
-        rewrite_pending_ = false;
         clear_active_rewrite_locked();
         if (mode == CleanupMode::Off) {
             state_.rewrite_ready = false;
@@ -335,28 +339,17 @@ bool AppController::set_rewrite_device(bool use_gpu) {
 void AppController::tick() {
     std::lock_guard lock(mutex_);
     const auto now = std::chrono::steady_clock::now();
-    if (active_rewrite_ && now - active_rewrite_->started >= kRewriteTimeout) {
-        const ActiveRewrite timed_out = *active_rewrite_;
-        state_.pipeline_debug.rewrite_response_request_id = timed_out.id;
+    if (active_rewrite_ && now - active_rewrite_->started >= kFinalCleanupTimeout) {
+        const std::string timed_out_id = active_rewrite_->id;
+        state_.pipeline_debug.rewrite_response_request_id = timed_out_id;
         state_.pipeline_debug.rewrite_response_json.clear();
         state_.pipeline_debug.rewrite_request_status = "Timed out";
         clear_active_rewrite_locked();
-        const bool preserved = transcript_.preserve_raw(timed_out.transcript);
-        state_.pipeline_debug.rewrite_decision = preserved
-            ? "Preserved raw: the rewrite timed out, so its stable ASR span was consumed without cleanup."
-            : "Ignored: the timed-out request no longer matched the semantic transcript.";
-        if (preserved) refresh_transcript_locked();
-        state_.error = "AI cleanup timed out; raw transcription continues.";
-        if (state_.mode == DictationMode::Recording) {
-            state_.status = "Listening - AI cleanup timed out; raw transcription continues";
-        }
-        if (transcript_.has_stable_backlog()) {
-            queue_rewrite_locked();
-        }
-    }
-    if (state_.mode == DictationMode::Recording && state_.cleanup_mode == CleanupMode::Ai &&
-        state_.rewrite_ready && !active_rewrite_ && rewrite_pending_ && now >= rewrite_due_) {
-        dispatch_rewrite_locked();
+        state_.pipeline_debug.rewrite_decision =
+            "Preserved raw: final cleanup timed out without changing the dictation.";
+        complete_with_raw_fallback_locked(
+            "Cleanup timed out - review the raw transcript and press Enter to insert",
+            "AI cleanup timed out; the complete raw transcript was preserved.");
     }
 }
 
@@ -377,8 +370,8 @@ void AppController::handle_asr_message(const nlohmann::json& message) {
         if (message.value("sessionId", "") != session_id_) return;
         state_.mode = DictationMode::Recording;
         state_.status = state_.cleanup_mode == CleanupMode::Ai
-            ? (state_.rewrite_ready ? "Listening - bounded AI cleanup is ready"
-                                    : "Listening - raw text while AI cleanup prepares")
+            ? (state_.rewrite_ready ? "Listening - cleanup will run after dictation"
+                                    : "Listening - cleanup model is still loading")
             : "Listening - raw transcription";
         if (language_restart_pending_) stop_for_language_change_locked();
     } else if (type == "audio_level") {
@@ -394,10 +387,6 @@ void AppController::handle_asr_message(const nlohmann::json& message) {
         state_.pipeline_debug.nemotron_text = message.value("text", "");
         transcript_.update_asr_hypothesis(state_.pipeline_debug.nemotron_text);
         refresh_transcript_locked();
-        // Re-arm the quiet-period debounce whenever Nemotron extends the stable
-        // backlog. The maximum delay still guarantees progress during continuous
-        // speech.
-        if (transcript_.has_stable_backlog()) queue_rewrite_locked();
     } else if (type == "recording_finalized") {
         if (message.value("sessionId", "") != session_id_) return;
         state_.audio_rms = 0.0F;
@@ -431,10 +420,9 @@ void AppController::handle_asr_message(const nlohmann::json& message) {
         state_.live_text.clear();
         state_.raw_final_text.clear();
         state_.rewritten_text.clear();
+        state_.insertion_confirmation_required = false;
         state_.pipeline_debug = {};
         language_restart_pending_ = false;
-        rewrite_pending_ = false;
-        has_rewrite_dispatch_time_ = false;
         session_id_.clear();
         dictation_id_.clear();
     } else if (type == "warning") {
@@ -464,74 +452,59 @@ void AppController::handle_rewrite_message(const nlohmann::json& message) {
         state_.rewrite_ready = true;
         state_.error.clear();
         if (state_.mode == DictationMode::Recording) {
-            state_.status = "Listening - bounded AI cleanup is ready";
-            if (transcript_.has_stable_backlog()) queue_rewrite_locked();
+            state_.status = "Listening - cleanup will run after dictation";
+        } else if (state_.mode == DictationMode::Finalizing &&
+                   !state_.raw_final_text.empty() && !active_rewrite_) {
+            dispatch_final_cleanup_locked();
         } else if (state_.mode == DictationMode::Ready) {
             state_.status = "Ready - AI cleanup loaded";
         }
-    } else if (type == "rewrite_tail_completed") {
+    } else if (type == "rewrite_completed") {
         if (!active_rewrite_ || message.value("requestId", "") != active_rewrite_->id) return;
-        const ActiveRewrite completed = *active_rewrite_;
-        state_.pipeline_debug.rewrite_response_request_id = completed.id;
+        const std::string completed_id = active_rewrite_->id;
+        state_.pipeline_debug.rewrite_response_request_id = completed_id;
         state_.pipeline_debug.rewrite_response_json = message.dump(2);
         clear_active_rewrite_locked();
-        const bool identity_matches =
-            message.value("sessionId", "") == dictation_id_ &&
-            message.value("tailRevision", std::uint64_t(-1)) == completed.transcript.tail_revision &&
-            message.value("firstStableSpanId", std::uint64_t(0)) ==
-                completed.transcript.first_stable_span_id &&
-            message.value("lastStableSpanId", std::uint64_t(0)) ==
-                completed.transcript.last_stable_span_id;
-        const auto commit_result = identity_matches
-            ? transcript_.commit(
-                completed.transcript, message.value("replacementTail", ""))
-            : RewriteCommitResult::Rejected;
-        if (commit_result != RewriteCommitResult::Rejected) {
-            if (commit_result == RewriteCommitResult::PreservedRaw) {
-                state_.pipeline_debug.rewrite_decision =
-                    "Preserved raw: the model response omitted too much of the existing editable tail.";
-                state_.error =
-                    "AI cleanup returned an incomplete tail; DictScribe preserved the raw speech.";
-            } else {
-                state_.pipeline_debug.rewrite_decision =
-                    "Accepted: replacementTail committed to the semantic transcript.";
-                state_.error.clear();
-            }
-            refresh_transcript_locked();
-        } else {
-            state_.pipeline_debug.rewrite_decision = identity_matches
-                ? "Rejected: empty or stale semantic transcript snapshot."
-                : "Ignored: response identity no longer matches the active transcript.";
+        const std::string cleaned = message.value("text", "");
+        if (cleaned.empty()) {
+            state_.pipeline_debug.rewrite_decision =
+                "Preserved raw: final cleanup returned an empty transcript.";
+            complete_with_raw_fallback_locked(
+                "Cleanup returned no text - review the raw transcript and press Enter to insert",
+                "AI cleanup returned an empty result; the complete raw transcript was preserved.");
+            return;
         }
-        if (state_.mode == DictationMode::Recording && transcript_.has_stable_backlog()) {
-            queue_rewrite_locked();
-            state_.status = "Listening - newer speech is waiting for cleanup";
-        } else if (state_.mode == DictationMode::Recording) {
-            state_.status = "Listening - bounded AI cleanup is up to date";
-        }
+        state_.rewritten_text = cleaned;
+        state_.live_text = cleaned;
+        state_.pipeline_debug.composed_text = cleaned;
+        state_.pipeline_debug.rewrite_request_status = "Completed";
+        state_.pipeline_debug.rewrite_decision =
+            "Accepted: the complete final transcript was replaced by the cleanup result.";
+        state_.error.clear();
+        state_.insertion_confirmation_required = true;
+        state_.mode = DictationMode::Complete;
+        state_.status = "Cleanup complete - review the text and press Enter to insert";
     } else if (type == "error") {
-        const std::optional<ActiveRewrite> failed = active_rewrite_;
-        state_.pipeline_debug.rewrite_response_request_id = failed
-            ? failed->id : state_.pipeline_debug.rewrite_request_id;
+        const std::string failed_id = active_rewrite_
+            ? active_rewrite_->id : state_.pipeline_debug.rewrite_request_id;
+        state_.pipeline_debug.rewrite_response_request_id = failed_id;
         state_.pipeline_debug.rewrite_response_json = message.dump(2);
         state_.pipeline_debug.rewrite_request_status = "Worker returned an error";
         const bool fatal = !message.value("recoverable", false) ||
             message.value("code", "") == "WORKER_EXITED" ||
             message.value("code", "") == "MODEL_LOAD_FAILED";
         clear_active_rewrite_locked();
-        const bool preserved = failed && transcript_.preserve_raw(failed->transcript);
-        state_.pipeline_debug.rewrite_decision = preserved
-            ? "Preserved raw: the worker failed, so its stable ASR span was consumed without cleanup."
-            : "Rewrite worker error; no matching semantic span was changed.";
-        if (preserved) refresh_transcript_locked();
+        state_.pipeline_debug.rewrite_decision =
+            "Preserved raw: final cleanup failed without changing the dictation.";
         if (fatal) {
             rewrite_unavailable_ = true;
             state_.rewrite_ready = false;
         }
-        state_.error = message.value("message", "Rewrite worker error");
-        if (state_.mode == DictationMode::Recording) {
-            state_.status = "Listening - AI cleanup failed; raw transcription continues";
-            if (transcript_.has_stable_backlog()) queue_rewrite_locked();
+        const std::string error = message.value("message", "Rewrite worker error");
+        state_.error = error;
+        if (state_.mode == DictationMode::Finalizing && !state_.raw_final_text.empty()) {
+            complete_with_raw_fallback_locked(
+                "Cleanup failed - review the raw transcript and press Enter to insert", error);
         } else if (state_.mode == DictationMode::Ready || state_.mode == DictationMode::Complete) {
             state_.status = "AI cleanup unavailable - raw dictation remains ready";
         }
@@ -551,85 +524,32 @@ void AppController::update_ready_state_locked() {
 }
 
 void AppController::refresh_transcript_locked() {
-    state_.live_text = state_.cleanup_mode == CleanupMode::Ai
-        ? transcript_.composed_text() : transcript_.raw_text();
-    state_.rewritten_text = state_.live_text;
+    state_.live_text = transcript_.raw_text();
     state_.pipeline_debug.composed_text = state_.live_text;
 }
 
-void AppController::queue_rewrite_locked() {
-    if (state_.cleanup_mode != CleanupMode::Ai || !transcript_.has_stable_backlog()) return;
-    const auto now = std::chrono::steady_clock::now();
-    if (!rewrite_pending_) rewrite_pending_since_ = now;
-    rewrite_pending_ = true;
-    const auto collection_deadline = rewrite_pending_since_ + kRewriteInterval;
-    const auto quiet_due = std::min(now + kLiveCleanupDebounce, collection_deadline);
-    const auto interval_due = has_rewrite_dispatch_time_
-        ? last_rewrite_dispatch_ + kRewriteInterval
-        : collection_deadline;
-    rewrite_due_ = std::max(quiet_due, interval_due);
-    if (state_.mode == DictationMode::Recording && state_.rewrite_ready) {
-        state_.status = active_rewrite_
-            ? "Listening - newer stable speech is coalesced"
-            : "Listening - bounded AI cleanup queued";
-    }
-}
-
-bool AppController::dispatch_rewrite_locked() {
+bool AppController::dispatch_final_cleanup_locked() {
     if (active_rewrite_ || !state_.rewrite_ready ||
-        state_.cleanup_mode != CleanupMode::Ai) return false;
-    const auto snapshot = transcript_.make_rewrite_snapshot();
-    if (!snapshot) {
-        rewrite_pending_ = false;
-        return false;
-    }
+        state_.cleanup_mode != CleanupMode::Ai || state_.raw_final_text.empty()) return false;
     const auto now = std::chrono::steady_clock::now();
-    const auto backlog_age = now - rewrite_pending_since_;
-    const std::size_t new_word_count = ApproximateWordCount(snapshot->new_asr_text);
-    if (new_word_count < kMinimumLiveRewriteWords) {
-        rewrite_pending_ = false;
-        state_.pipeline_debug.rewrite_request_id.clear();
-        state_.pipeline_debug.rewrite_request_json.clear();
-        std::ostringstream deferred_status;
-        deferred_status << "Deferred: collected " << new_word_count
-                        << " approximate new words; waiting for at least "
-                        << kMinimumLiveRewriteWords
-                        << " before another live rewrite.";
-        state_.pipeline_debug.rewrite_request_status = deferred_status.str();
-        state_.status = "Listening - collecting a larger cleanup segment";
-        return false;
-    }
     ActiveRewrite active;
-    active.id = next_id_locked("rewrite-tail");
-    active.transcript = *snapshot;
+    active.id = next_id_locked("rewrite-final");
     active.started = now;
     active_rewrite_ = active;
-    has_rewrite_dispatch_time_ = true;
-    last_rewrite_dispatch_ = now;
     state_.rewrite_in_progress = true;
-    rewrite_pending_ = false;
-    state_.status = "Listening - cleaning a bounded transcript tail...";
+    state_.status = "Cleaning up the complete dictation...";
 
     const nlohmann::json command = {
-            {"v", 2}, {"type", "rewrite_tail"}, {"id", active.id},
+            {"v", 1}, {"type", "rewrite"}, {"id", active.id},
             {"requestId", active.id}, {"sessionId", dictation_id_},
-            {"tailRevision", snapshot->tail_revision},
-            {"firstStableSpanId", snapshot->first_stable_span_id},
-            {"lastStableSpanId", snapshot->last_stable_span_id},
-            {"languageHint", state_.language},
-            {"readOnlyContext", snapshot->read_only_context},
-            {"editableTail", snapshot->editable_tail},
-            {"newAsrText", snapshot->new_asr_text}};
+            {"language", state_.language},
+            {"text", state_.raw_final_text}};
     state_.pipeline_debug.rewrite_request_id = active.id;
-    const auto queue_time = std::chrono::duration_cast<std::chrono::milliseconds>(
-        backlog_age).count();
+    const std::size_t word_count = ApproximateWordCount(state_.raw_final_text);
     std::ostringstream request_status;
-    request_status << "Pending model response; collected for "
-                   << std::max<std::int64_t>(queue_time, 0) << " ms; newAsrText contains "
-                   << new_word_count << " approximate words / "
-                   << snapshot->new_asr_text.size() << " UTF-8 bytes. "
-                   << "Scheduler: minimum 8000 ms between rewrite dispatches plus "
-                      "a 1200 ms quiet debounce.";
+    request_status << "Pending one final model response for the complete transcript: "
+                   << word_count << " approximate words / "
+                   << state_.raw_final_text.size() << " UTF-8 bytes.";
     state_.pipeline_debug.rewrite_request_status = request_status.str();
     state_.pipeline_debug.rewrite_request_json = command.dump(2);
 
@@ -638,12 +558,13 @@ bool AppController::dispatch_rewrite_locked() {
         state_.pipeline_debug.rewrite_request_status =
             "Dispatch failed before the rewrite worker accepted the request: " + error;
         clear_active_rewrite_locked();
-        state_.error = std::move(error);
-        state_.status = "Listening - AI cleanup unavailable; raw transcription continues";
         if (!rewrite_.running()) {
             rewrite_unavailable_ = true;
             state_.rewrite_ready = false;
         }
+        complete_with_raw_fallback_locked(
+            "Cleanup could not start - review the raw transcript and press Enter to insert",
+            std::move(error));
         return false;
     }
     return true;
@@ -654,15 +575,35 @@ void AppController::clear_active_rewrite_locked() {
     state_.rewrite_in_progress = false;
 }
 
+void AppController::complete_with_raw_fallback_locked(std::string status, std::string error) {
+    state_.rewritten_text = state_.raw_final_text;
+    state_.live_text = state_.raw_final_text;
+    state_.pipeline_debug.composed_text = state_.raw_final_text;
+    state_.insertion_confirmation_required = true;
+    state_.mode = DictationMode::Complete;
+    state_.status = std::move(status);
+    state_.error = std::move(error);
+}
+
 void AppController::finish_dictation_locked() {
-    rewrite_pending_ = false;
     clear_active_rewrite_locked();
-    state_.rewritten_text = state_.cleanup_mode == CleanupMode::Ai
-        ? transcript_.composed_text() : state_.raw_final_text;
-    state_.live_text = state_.rewritten_text;
-    state_.status = state_.cleanup_mode == CleanupMode::Ai
-        ? "Dictation complete using accepted cleanup plus final raw speech"
-        : "Dictation complete using the final raw transcript";
+    if (state_.cleanup_mode == CleanupMode::Ai) {
+        state_.insertion_confirmation_required = true;
+        if (rewrite_unavailable_) {
+            complete_with_raw_fallback_locked(
+                "Cleanup unavailable - review the raw transcript and press Enter to insert",
+                state_.error.empty() ? "AI cleanup is unavailable." : state_.error);
+        } else if (state_.rewrite_ready) {
+            dispatch_final_cleanup_locked();
+        } else {
+            state_.status = "Waiting for the cleanup model to finish loading...";
+        }
+        return;
+    }
+    state_.rewritten_text = state_.raw_final_text;
+    state_.live_text = state_.raw_final_text;
+    state_.insertion_confirmation_required = false;
+    state_.status = "Dictation complete using the final raw transcript";
     state_.mode = DictationMode::Complete;
 }
 
@@ -686,7 +627,9 @@ bool CanToggle(const AppSnapshot& snapshot) {
 
 bool CanCancel(const AppSnapshot& snapshot) {
     return snapshot.mode == DictationMode::Recording ||
-        snapshot.mode == DictationMode::StartingRecording;
+        snapshot.mode == DictationMode::StartingRecording ||
+        (snapshot.mode == DictationMode::Complete &&
+         snapshot.insertion_confirmation_required);
 }
 
 bool CanSetLanguage(const AppSnapshot& snapshot) {
@@ -714,7 +657,9 @@ const char* PrimaryButtonLabel(const AppSnapshot& snapshot) {
     case DictationMode::Recording: return "Stop dictation";
     case DictationMode::StartingRecording: return "Opening microphone...";
     case DictationMode::Finalizing: return "Finalizing transcript...";
-    case DictationMode::Complete: return "Start another dictation";
+    case DictationMode::Complete:
+        return snapshot.insertion_confirmation_required
+            ? "Insert text" : "Start another dictation";
     case DictationMode::Ready: return "Start dictation";
     case DictationMode::Error: return "Unavailable";
     case DictationMode::Starting: return "Loading speech model...";

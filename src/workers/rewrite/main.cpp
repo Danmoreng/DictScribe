@@ -88,7 +88,7 @@ public:
 
         std::string rewritten;
         std::string error;
-        if (!rewriter_.rewrite(transcript, source_language, 512, rewritten, error)) {
+        if (!rewriter_.rewrite(transcript, source_language, 1024, rewritten, error)) {
             emit_error("REWRITE_FAILED", error, true, id);
             return true;
         }
